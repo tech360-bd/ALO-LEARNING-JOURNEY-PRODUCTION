@@ -31,7 +31,7 @@ The assertion exercises registration rollback: a second user with a different em
 
 **Fix in PR #16:** fallback now accepts Prisma initialization failures and explicit connection/configuration codes only. Constraint/validation failures such as `P2002` remain on MySQL. A regression test covers both cases. No fallback safety guard was weakened.
 
-The full CI run `45401273670` passed after this fix. After the Tailscale YAML version update, CI run `45402151030` also passed at head `f4dd141558847cc68477560bf9265b970f89a4c4`: migrations, lint, typecheck, unit tests, tenant integration, media/photo-video tests, production build, and secret scan all succeeded. PR #16 is **open**, with CI green and Datadog skipped by design.
+The full CI run `45401273670` passed after this fix. After the Tailscale YAML version update, CI run `45402151030` passed at code/workflow commit `f4dd141558847cc68477560bf9265b970f89a4c4`. The audit-inventory revision of PR #16 also passed in run `45403076219`. Across these runs, migrations, lint, typecheck, unit tests, tenant integration, media/photo-video checks, production build, and secret scan succeeded. PR #16 remains **open**, with CI green and Datadog skipped by design.
 
 ## Workflow and version audit
 
@@ -63,7 +63,7 @@ All 15 PRs present at the snapshot were merged. Their check history was reviewed
 - **PRs #1 and #3–#12:** CI validation passed.
 - **PR #2:** no check rollup was attached; its related CI and Datadog runs had no job records, so a pass cannot be claimed.
 - **PRs #13–#15:** validation failed at the PR head while the independent secret-scan jobs passed. #13/#14 failed in the combined unit/rollback step; #15 failed in tenant integration. These PRs were merged with failing validation checks, and the same failures appeared on main. Keep the required CI validation green before merging future PRs.
-- **PR #16:** open from the current Arena branch, head `f4dd141`; CI and secret scan are green, Datadog is skipped by design. [PR #16](https://github.com/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/pull/16).
+- **PR #16:** open from the current Arena branch. The code/workflow fix passed CI in `45402151030`; the audit-inventory revision passed CI and secret scan in `45403076219`. Datadog is skipped by design. [PR #16](https://github.com/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/pull/16).
 
 ## Separate dependency-audit warning
 
