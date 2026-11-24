@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  isEngineOrConnectionError,
   mayFallbackAfterPrismaError,
   shouldStartInFallback,
 } from "../src/lib/db-fallback-policy.mjs";
@@ -45,4 +46,28 @@ test("Prisma connection errors may enable fallback only outside production", () 
   assert.equal(mayFallbackAfterPrismaError("test"), true);
   assert.equal(mayFallbackAfterPrismaError("production"), false);
   assert.equal(mayFallbackAfterPrismaError(undefined), true);
+});
+
+test("fallback ignores Prisma data and validation errors but accepts explicit connectivity failures", () => {
+  const prismaError = (code, message) => Object.assign(new Error(message), {
+    name: "PrismaClientKnownRequestError",
+    code,
+  });
+
+  assert.equal(
+    isEngineOrConnectionError(prismaError("P1001", "Can't reach database server at 127.0.0.1:3306")),
+    true,
+  );
+  assert.equal(
+    isEngineOrConnectionError(prismaError("P2002", "Unique constraint failed on MosCompany.slug")),
+    false,
+  );
+  assert.equal(
+    isEngineOrConnectionError(new Error("Invalid `prisma.mosCompany.create()` invocation: unique constraint failed")),
+    false,
+  );
+  assert.equal(
+    isEngineOrConnectionError(Object.assign(new Error("Engine failed to start"), { name: "PrismaClientInitializationError" })),
+    true,
+  );
 });
