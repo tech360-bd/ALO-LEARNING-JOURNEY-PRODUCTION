@@ -11,6 +11,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checkingConfig, setCheckingConfig] = useState(true);
   const [otpRequired, setOtpRequired] = useState(false);
   const [otpAvailable, setOtpAvailable] = useState(false);
   const [otpRequested, setOtpRequested] = useState(false);
@@ -39,7 +40,7 @@ export default function LoginPage() {
         setOtpRequired(true);
         setOtpAvailable(false);
         setSetupRequired(true);
-      });
+      }).finally(() => setCheckingConfig(false));
     return () => { if (frame !== undefined) window.cancelAnimationFrame(frame); };
   }, []);
 
@@ -100,14 +101,14 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="min-h-screen alo-bg flex items-center justify-center p-4">
+    <main className="min-h-screen bg-gradient-to-br from-blue-50 via-background to-orange-50/60 dark:from-background dark:to-background flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-400 to-rose-400 shadow-lg alo-glow">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-blue-800 shadow-md">
             <Heart className="h-5 w-5 text-white" fill="white" />
           </div>
           <div>
-            <p className="text-xl font-bold leading-tight">আলো <span className="alo-text-grad">Learning Journey</span></p>
+            <p className="text-xl font-bold leading-tight">আলো <span className="text-blue-700 dark:text-blue-300">Learning Journey</span></p>
             <p className="mt-0.5 text-xs text-muted-foreground">Administrator sign in</p>
           </div>
         </div>
@@ -163,14 +164,14 @@ export default function LoginPage() {
 
             {otpRequired && <div className="space-y-2 rounded-xl border border-border/60 bg-muted/20 p-3">
               <Label htmlFor="admin-otp">SMS one-time code</Label>
-              <div className="flex gap-2"><Input id="admin-otp" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit code" className="h-11" /><Button type="button" variant="outline" disabled={!otpAvailable || otpBusy || setupRequired || !email || !password} onClick={requestOtp} className="shrink-0">{otpBusy ? "Queueing…" : "Request SMS code"}</Button></div>
+              <div className="flex flex-col gap-2 sm:flex-row"><Input id="admin-otp" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required maxLength={6} value={otpCode} onChange={(event) => setOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6-digit code" className="h-11" /><Button type="button" variant="outline" disabled={!otpAvailable || otpBusy || setupRequired || !email || !password} onClick={requestOtp} className="shrink-0">{otpBusy ? "Queueing…" : "Request SMS code"}</Button></div>
               <p className="text-[11px] leading-relaxed text-muted-foreground">{otpMessage || "A code is sent only to the fixed administrator phone. SMS arrival depends on the configured HTTP SMS gateway and handset."}</p>
             </div>}
 
             {error && <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive" role="alert">{error}</p>}
 
-            <Button type="submit" disabled={busy || setupRequired} className="h-11 w-full bg-gradient-to-r from-amber-500 to-rose-500 text-white hover:from-amber-600 hover:to-rose-600">
-              {busy ? "Signing in…" : "Sign in securely"}
+            <Button type="submit" disabled={checkingConfig || busy || setupRequired} className="h-11 w-full bg-blue-700 text-white hover:bg-blue-800">
+              {checkingConfig ? "Checking sign-in options…" : busy ? "Signing in…" : "Sign in securely"}
               {!busy && <ArrowRight className="h-4 w-4" />}
             </Button>
           </form>

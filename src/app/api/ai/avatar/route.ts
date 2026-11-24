@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { emitEvent } from '@/lib/events';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function GET(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     if (!name) return NextResponse.json({ error: 'name required' }, { status: 400 });
     let faceImageUrl = null;
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const result = await zai.images.generations.create({ prompt: `Professional portrait of a ${body.ethnicity || 'asian'} ${body.gender || 'female'}, ${body.age || 'young adult'}, ${body.style || 'professional'}`, size: '1024x1024' });
       if (result.data?.[0]?.base64) faceImageUrl = `data:image/png;base64,${result.data[0].base64}`;
     } catch {}

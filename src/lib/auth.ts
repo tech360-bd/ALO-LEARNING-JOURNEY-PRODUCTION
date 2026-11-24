@@ -21,6 +21,8 @@ import {
   isAdminOtpRequired,
 } from "@/lib/auth-config";
 import { SignJWT, jwtVerify } from "jose";
+import type { Prisma } from '@prisma/client';
+import { db } from '@/lib/db';
 import bcrypt from "bcryptjs";
 
 export { isAdminOtpRequired };
@@ -210,41 +212,20 @@ export function passwordNeedsUpgrade(hash: string): boolean {
 
 // ─── Roles ───────────────────────────────────────────────────────────────────
 
-export const ROLES = [
-  'super_admin',
-  'company_owner',
-  'admin',
-  'manager',
-  'social_media_manager',
-  'content_manager',
-  'seo_manager',
-  'ai_agent_manager',
-  'customer_support',
-  'team_member',
-  'client_user',
-  'viewer',
-] as const;
-
-export type Role = (typeof ROLES)[number];
-
-export const ROLE_LABELS: Record<string, string> = {
-  super_admin: 'Super Admin',
-  company_owner: 'Company Owner',
-  admin: 'Admin',
-  manager: 'Manager',
-  social_media_manager: 'Social Media Manager',
-  content_manager: 'Content Manager',
-  seo_manager: 'SEO Manager',
-  ai_agent_manager: 'AI Agent Manager',
-  customer_support: 'Customer Support',
-  team_member: 'Team Member',
-  client_user: 'Client User',
-  viewer: 'Viewer',
-};
+export { ROLES, ROLE_LABELS, type Role } from './team-roles';
 
 // ─── JWT Token ───────────────────────────────────────────────────────────────
 
-export async function createToken(payload: { userId: string; email: string; role: string; companyId?: string }): Promise<string> {
+type TenantClaims = { userId: string; email: string; role: string; companyId?: string; sid?: string };
+
+// Use the existing session table; signing and the row are committed together
+// by the surrounding login, registration or refresh transaction.
+export async function issueSessionToken(tx: Pick<Prisma.TransactionClient, 'userSession'>, claims: TenantClaims, device: string | null, id?: string) {
+  const session = await tx.userSession.create({ data: { id, userId: claims.userId, deviceInfo: device?.slice(0, 255) || 'Unknown device' } });
+  return createToken({ ...claims, sid: session.id });
+}
+
+export async function createToken(payload: TenantClaims): Promise<string> {
   return new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('7d')
@@ -254,7 +235,16 @@ export async function createToken(payload: { userId: string; email: string; role
 
 export async function verifyToken(token: string): Promise<any> {
   try {
-    const { payload } = await jwtVerify(token, getJwtSecret());
+    const { payload } = await jwtVerify(token, getJwtSecret(), { algorithms: ['HS256'], maxTokenAge: '7d', requiredClaims: ['exp', 'userId'] });
+    if (typeof payload.userId !== 'string' || !payload.userId) return null;
+    // Cutover policy: legacy bearer tokens must sign in again.
+    if (!payload.sid || typeof payload.sid !== 'string' || typeof payload.companyId !== 'string' || typeof payload.role !== 'string') return null;
+    const session = await db.userSession.findFirst({ where: {
+      id: payload.sid, userId: payload.userId, user: { isActive: true,
+        ...(payload.companyId ? { companyUsers: { some: { companyId: payload.companyId, role: payload.role } } } : {}),
+      },
+    }, select: { id: true } });
+    if (!session) return null;
     return payload;
   } catch {
     return null;

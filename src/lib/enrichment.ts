@@ -1,3 +1,4 @@
+import { publicHttp } from './public-http';
 /**
  * Lead enrichment service — auto-fill company info from an email domain.
  * Inspired by brightdata/open-enrich + parthasarathy123/n8n-gtm-lead-enrichment.
@@ -64,25 +65,13 @@ export async function enrichByDomain(domain: string): Promise<EnrichmentResult> 
   };
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(`https://${cleanDomain}`, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; MarketingOS/1.0; enrichment-bot)',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
-
-    if (!res.ok) {
+    const { status, text: html } = await publicHttp(`https://${cleanDomain}`);
+    if (status < 200 || status >= 300) {
       result.source = 'failed';
       await cacheResult(cleanDomain, result);
       return result;
     }
 
-    const html = await res.text();
     const parsed = parseHtmlForCompanyInfo(html, cleanDomain);
     Object.assign(result, parsed);
 

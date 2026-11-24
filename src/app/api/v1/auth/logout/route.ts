@@ -36,15 +36,19 @@ export async function POST(request: NextRequest) {
 
   if (body.all === true) {
     // Revoke every non-expired, non-revoked token for this user
-    const result = await db.refreshToken.updateMany({
-      where: {
-        userId: ctx.userId,
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(),
-        revokedReason: 'logout_all',
-      },
+    const result = await db.$transaction(async tx => {
+      const result = await tx.refreshToken.updateMany({
+        where: {
+          userId: ctx.userId,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+          revokedReason: 'logout_all',
+        },
+      });
+      await tx.userSession.deleteMany({ where: { userId: ctx.userId } });
+      return result;
     });
     await emitEvent({
       type: 'auth.logout_all',
@@ -64,9 +68,12 @@ export async function POST(request: NextRequest) {
   if (!existing) return ok({ revoked: true, count: 0 }); // idempotent
   if (existing.userId !== ctx.userId) return unauthorized(); // token belongs to someone else
 
-  await db.refreshToken.update({
-    where: { id: existing.id },
-    data: { revokedAt: new Date(), revokedReason: 'logout' },
+  await db.$transaction(async tx => {
+    await tx.refreshToken.update({
+      where: { id: existing.id },
+      data: { revokedAt: new Date(), revokedReason: 'logout' },
+    });
+    await tx.userSession.deleteMany({ where: { id: existing.id, userId: ctx.userId } });
   });
 
   await emitEvent({

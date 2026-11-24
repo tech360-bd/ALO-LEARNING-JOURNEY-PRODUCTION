@@ -76,7 +76,7 @@ jobs:
     # runs only once the readiness switch is on: with deployment disabled and the
     # Tailscale/SSH secrets not yet configured, every merge to main would
     # otherwise end in a red, fail-closed preflight that deploys nothing.
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.VPS_DEPLOY_ENABLED == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.VPS_DEPLOY_ENABLED == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
@@ -176,7 +176,7 @@ jobs:
     name: deploy
     needs: [verify, network-preflight]
     # Readiness switch + explicit run mode. Unset VPS_DEPLOY_ENABLED ⇒ skipped.
-    if: ${{ vars.VPS_DEPLOY_ENABLED == 'true' && (github.event_name == 'push' || inputs.mode == 'deploy') }}
+    if: ${{ github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true' && (github.event_name == 'push' || inputs.mode == 'deploy') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     # Explicit production approval gate: configure required reviewers on this

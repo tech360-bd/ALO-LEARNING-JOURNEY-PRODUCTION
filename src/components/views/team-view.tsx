@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback } from "react";
 import { motion, type Variants } from "framer-motion";
+import { canAssignTeamRole, canManageTeam } from "@/lib/team-roles";
 import { useAppStore } from "@/stores/app-store";
 import { useApiQuery, useApiMutation } from "@/hooks/use-api-query";
 import {
@@ -88,6 +89,8 @@ const ALL_ROLES = [
   "Client User",
   "Viewer",
 ] as const;
+
+const roleKey = (role: string) => role.toLowerCase().replace(/ /g, "_");
 
 type RoleType = (typeof ALL_ROLES)[number];
 
@@ -273,6 +276,7 @@ function TeamSkeleton() {
 // ─── Invite Dialog ───────────────────────────────────────────────────────────────
 
 function InviteDialog({ onInvite }: { onInvite: (email: string, role: string) => void }) {
+  const actor = useAppStore(s => s.user?.role);
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<string>("");
@@ -285,10 +289,12 @@ function InviteDialog({ onInvite }: { onInvite: (email: string, role: string) =>
     }
     setSending(true);
     try {
-      await onInvite(email.trim(), role);
+      await onInvite(email.trim(), roleKey(role));
       setEmail("");
       setRole("");
       setOpen(false);
+    } catch {
+      // The mutation displays the server error; keep input for retry.
     } finally {
       setSending(false);
     }
@@ -331,7 +337,7 @@ function InviteDialog({ onInvite }: { onInvite: (email: string, role: string) =>
                 <SelectValue placeholder="Select a role..." />
               </SelectTrigger>
               <SelectContent>
-                {ALL_ROLES.map((r) => (
+                {ALL_ROLES.filter(r => canAssignTeamRole(actor, roleKey(r))).map((r) => (
                   <SelectItem key={r} value={r}>
                     {r}
                   </SelectItem>
@@ -373,13 +379,15 @@ function MemberCard({
   onRoleChange: (id: string, role: string) => void;
   onRemove: (id: string) => void;
 }) {
+  const actor = useAppStore(s => s.user?.role);
+  const editable = canAssignTeamRole(actor, roleKey(member.role));
   const [changingRole, setChangingRole] = useState(false);
 
   const handleRoleChange = async (newRole: string) => {
     if (newRole === member.role) return;
     setChangingRole(true);
     try {
-      await onRoleChange(member.id, newRole);
+      await onRoleChange(member.id, roleKey(newRole));
     } finally {
       setChangingRole(false);
     }
@@ -413,6 +421,7 @@ function MemberCard({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
                   className="text-red-600 dark:text-red-400"
+                  disabled={!editable}
                   onClick={() => onRemove(member.id)}
                 >
                   <Trash2 className="h-4 w-4 mr-2" />
@@ -443,7 +452,7 @@ function MemberCard({
               <Select
                 value={member.role}
                 onValueChange={handleRoleChange}
-                disabled={changingRole || member.role === "Super Admin" || member.role === "Company Owner"}
+                disabled={changingRole || !editable}
               >
                 <SelectTrigger className="h-7 text-xs flex-1">
                   {changingRole ? (
@@ -453,7 +462,7 @@ function MemberCard({
                   )}
                 </SelectTrigger>
                 <SelectContent>
-                  {ALL_ROLES.map((r) => (
+                  {ALL_ROLES.filter(r => canAssignTeamRole(actor, roleKey(r))).map((r) => (
                     <SelectItem key={r} value={r} className="text-xs">
                       {r}
                     </SelectItem>
@@ -479,6 +488,7 @@ function PendingInvitationsTable({
   onResend: (id: string) => void;
   onRevoke: (id: string) => void;
 }) {
+  const actor = useAppStore(s => s.user?.role);
   if (invitations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
@@ -536,6 +546,7 @@ function PendingInvitationsTable({
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7 text-blue-500 hover:text-blue-600 hover:bg-blue-500/10"
+                              disabled={!canAssignTeamRole(actor, roleKey(inv.role))}
                               onClick={() => onResend(inv.id)}
                             >
                               <RefreshCw className="h-3.5 w-3.5" />
@@ -552,6 +563,7 @@ function PendingInvitationsTable({
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                            disabled={!canManageTeam(actor)}
                             onClick={() => onRevoke(inv.id)}
                           >
                             <Ban className="h-3.5 w-3.5" />
@@ -622,7 +634,7 @@ export function TeamView() {
   const [activeTab, setActiveTab] = useState<"members" | "invitations" | "logs">("members");
 
   // Fetch real team data from /api/team
-  const { data: apiData, isLoading, refetch } = useApiQuery<TeamData>("/api/team", { enabled: true });
+  const { data: apiData, isLoading, error, refetch } = useApiQuery<TeamData>("/api/team", { enabled: true });
 
   // Map API response to the view's expected shape
   const teamData: TeamData = apiData ?? {
@@ -669,11 +681,7 @@ export function TeamView() {
 
   const handleInvite = useCallback(
     async (email: string, role: string) => {
-      try {
-        inviteMutation.mutate({ action: "invite", email, role });
-      } catch {
-        // handled by mutation
-      }
+      await inviteMutation.mutateAsync({ action: "invite", email, role });
     },
     [inviteMutation]
   );
@@ -681,7 +689,7 @@ export function TeamView() {
   const handleRoleChange = useCallback(
     async (id: string, role: string) => {
       try {
-        roleMutation.mutate({ action: "update_role", companyUserId: id, role });
+        await roleMutation.mutateAsync({ action: "update_role", companyUserId: id, role });
       } catch {
         // handled by mutation
       }
@@ -734,6 +742,7 @@ export function TeamView() {
   const pendingCount = teamData.pendingInvitations.filter((i) => i.status === "pending").length;
 
   if (isLoading) return <TeamSkeleton />;
+  if (error) return <div role="alert">Could not load your team. <Button variant="outline" onClick={refetch}>Retry</Button></div>;
 
   return (
     <motion.div
@@ -753,7 +762,7 @@ export function TeamView() {
             Manage your team members, roles, and permissions
           </p>
         </div>
-        <InviteDialog onInvite={handleInvite} />
+        {canManageTeam(user?.role) && <InviteDialog onInvite={handleInvite} />}
       </motion.div>
 
       {/* Quick Stats */}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function POST(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
     if (!description) return NextResponse.json({ error: 'description required' }, { status: 400 });
     const type = body.type || 'flowchart';
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const completion = await zai.chat.completions.create({
         messages: [{ role: 'system', content: `Generate Mermaid ${type} diagram. Return ONLY valid Mermaid code.` }, { role: 'user', content: description }],
         thinking: { type: 'disabled' },

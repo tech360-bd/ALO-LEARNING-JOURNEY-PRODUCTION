@@ -1,4 +1,4 @@
-// @ts-nocheck — temporary: see audit for fix plan
+import { publicHttp } from '@/lib/public-http';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
@@ -32,26 +32,9 @@ export async function POST(req: NextRequest) {
 
     const mode = ['summary', 'metadata', 'full'].includes(body.mode) ? body.mode : 'summary';
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; MarketingOS/1.0; research-bot)',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      return NextResponse.json({
-        error: `Failed to fetch URL — HTTP ${res.status}`,
-      }, { status: 502 });
-    }
-
-    const html = await res.text();
-    const finalUrl = res.url || url;
+    const { status, text: html } = await publicHttp(url);
+    if (status < 200 || status >= 300) return NextResponse.json({ error: 'Retrieval failed' }, { status: 502 });
+    const finalUrl = url;
     const domain = new URL(finalUrl).hostname.replace(/^www\./, '');
 
     // Extract metadata
@@ -95,7 +78,7 @@ export async function POST(req: NextRequest) {
     const textBody = maxChars > 0 ? text.slice(0, maxChars) : '';
 
     // Try enrichment if we have a domain
-    let enrichment = null;
+    let enrichment: Awaited<ReturnType<typeof enrichByDomain>> | null = null;
     if (mode !== 'metadata') {
       try {
         enrichment = await enrichByDomain(domain);
@@ -133,7 +116,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('[POST /api/scraper]', err);
+    console.warn('[scraper] retrieval failed');
     return NextResponse.json({ error: 'Scrape failed' }, { status: 500 });
   }
 }

@@ -1,28 +1,10 @@
-/**
- * Free-model AI chain.
- *
- * The Integration Setup Agent (and any other v1 AI route) calls this
- * module instead of calling a single SDK. The chain tries each provider
- * in order; the first one that succeeds wins. Failures (rate limit,
- * network, auth, 5xx) trigger a failover to the next provider.
- *
- * Provider order — all FREE tier:
- *   1. Z.AI SDK         — primary (configured via /etc/.z-ai-config)
- *   2. Groq             — Llama 3.3 70B free tier
- *   3. Google Gemini    — gemini-1.5-flash free tier
- *   4. OpenRouter free  — meta-llama/llama-3.3-70b-instruct:free
- *   5. Ollama local     — http://localhost:11434 (self-hosted, no API key)
- *   6. Rule-based       — deterministic; never fails
- *
- * The chain NEVER uses a paid API. If only paid keys are configured,
- * the chain falls straight through to rule-based. This honors the
- * master directive: "ONLY open-source/free technologies — NO paid
- * APIs".
- *
- * Each call records which provider served it, so the agent's
- * TaskExecution row tells the operator which path actually fired.
- */
-import ZAI from 'z-ai-web-dev-sdk';
+/** MarketingOS provider failover. Hosted models require owner opt-in; a
+ * free-tier label is not a price guarantee. The final rule-based provider
+ * produces deterministic output, not model inference. */
+import { getPrivateLocalBaseUrl } from '@/lib/local-models';
+import { createApprovedZai } from '@/lib/approved-zai';
+
+import { isExternalAiAllowed } from '@/lib/agentos/payment-guard';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -114,11 +96,11 @@ export async function chainChat(
   }
 
   // 2. Groq (Llama 3.3 70B free)
-  if (process.env.GROQ_API_KEY) {
+  if (isExternalAiAllowed() && process.env.GROQ_API_KEY) {
     try {
       attempts.push({ provider: 'groq', ok: true });
       const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
+        method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
         headers: {
           Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json',
@@ -149,7 +131,7 @@ export async function chainChat(
   }
 
   // 3. Google Gemini (free tier)
-  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_STUDIO_KEY) {
+  if (isExternalAiAllowed() && (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_STUDIO_KEY)) {
     try {
       attempts.push({ provider: 'gemini', ok: true });
       const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_STUDIO_KEY;
@@ -162,7 +144,7 @@ export async function chainChat(
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
         {
-          method: 'POST',
+          method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: maxTokens, temperature } }),
         }
@@ -186,14 +168,15 @@ export async function chainChat(
   }
 
   // 4. OpenRouter (free models only)
-  if (process.env.OPENROUTER_API_KEY) {
+  if (isExternalAiAllowed() && process.env.OPENROUTER_API_KEY) {
     try {
       attempts.push({ provider: 'openrouter-free', ok: true });
       const model = options.preferredModel?.startsWith('openrouter:')
         ? options.preferredModel.slice(11)
         : 'meta-llama/llama-3.3-70b-instruct:free';
+      if (!model.endsWith(':free')) throw new Error('OpenRouter model must use a free variant');
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
+        method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           'Content-Type': 'application/json',
@@ -221,14 +204,14 @@ export async function chainChat(
   }
 
   // 5. Ollama (self-hosted)
-  const ollamaUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   try {
     attempts.push({ provider: 'ollama', ok: true });
+    const ollamaUrl = getPrivateLocalBaseUrl('OLLAMA_BASE_URL', 'http://localhost:11434').href.replace(/\/$/, '');
     const model = options.preferredModel?.startsWith('ollama:')
       ? options.preferredModel.slice(7)
       : process.env.OLLAMA_CHAT_MODEL || 'llama3.2';
     const r = await fetch(`${ollamaUrl}/api/chat`, {
-      method: 'POST',
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, messages, stream: false, options: { temperature, num_predict: maxTokens } }),
       // Next.js fetch with no-cache to avoid SSRF cache surprise
@@ -301,11 +284,11 @@ function defaultRuleBasedFallback(messages: ChatMessage[]): string {
  */
 let _zaiPromise: Promise<any | null> | null = null;
 function loadZai(): Promise<any | null> {
+  if (!isExternalAiAllowed()) return Promise.resolve(null);
   if (!_zaiPromise) {
     _zaiPromise = (async () => {
       try {
-        const mod = await import('z-ai-web-dev-sdk');
-        const zai = await mod.default.create();
+        const zai = await createApprovedZai();
         return zai;
       } catch {
         // Most likely /etc/.z-ai-config missing — silent failover
@@ -362,6 +345,15 @@ async function tryRegistryProviders(
   if (!providers || providers.length === 0) return null;
 
   for (const provider of providers) {
+    // Only the operator-configured local Ollama endpoint is exempt. A registry
+    // label such as "free" is not a billing or data-disclosure guarantee.
+    if (!isExternalAiAllowed()) {
+      if (provider.slug !== 'ollama') continue;
+      try {
+        const localEndpoint = getPrivateLocalBaseUrl('OLLAMA_BASE_URL', 'http://localhost:11434').href.replace(/\/$/, '');
+        if (provider.baseUrl?.replace(/\/$/, '') !== localEndpoint) continue;
+      } catch { continue; }
+    }
     const defaultModel = provider.models[0];
     if (!defaultModel) continue;
 
@@ -426,7 +418,7 @@ async function callRegistryProvider(
   if (slug === 'gemini') {
     const url = `${baseUrl}/models/${modelId}:generateContent?key=${apiKey}`;
     const r = await fetch(url, {
-      method: 'POST',
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
@@ -440,7 +432,7 @@ async function callRegistryProvider(
 
   if (slug === 'ollama' || slug === 'opencode') {
     const r = await fetch(`${baseUrl}/api/chat`, {
-      method: 'POST',
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: modelId, messages, stream: false, options: { num_predict: maxTokens, temperature } }),
       cache: 'no-store',
@@ -452,7 +444,7 @@ async function callRegistryProvider(
 
   if (slug === 'cloudflare') {
     const r = await fetch(`${baseUrl}/models/${modelId}`, {
-      method: 'POST', headers, body: JSON.stringify({ prompt: messages.map((m) => m.content).join('\n') }),
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error', headers, body: JSON.stringify({ prompt: messages.map((m) => m.content).join('\n') }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data: any = await r.json();
@@ -461,7 +453,7 @@ async function callRegistryProvider(
 
   if (slug === 'huggingface') {
     const r = await fetch(`${baseUrl}/${modelId}`, {
-      method: 'POST', headers, body: JSON.stringify({ inputs: messages.map((m) => m.content).join('\n') }),
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error', headers, body: JSON.stringify({ inputs: messages.map((m) => m.content).join('\n') }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data: any = await r.json();
@@ -476,7 +468,7 @@ async function callRegistryProvider(
   // Default: OpenAI-compatible /v1/chat/completions (groq, openrouter, mistral, opencode-compatible)
   if (provider.openAiCompatible) {
     const r = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
       headers,
       body: JSON.stringify({ model: modelId, messages, max_tokens: maxTokens, temperature }),
     });

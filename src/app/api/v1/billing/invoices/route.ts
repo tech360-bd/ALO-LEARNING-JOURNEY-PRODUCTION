@@ -59,6 +59,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json().catch(() => null);
+  if (body?.status != null && !['draft', 'sent'].includes(body.status)) return badRequest('New invoices must be draft or sent');
   if (!body || !body.invoiceNumber || !body.periodStart || !body.periodEnd || body.subtotal == null || body.total == null) {
     return badRequest('invoiceNumber, periodStart, periodEnd, subtotal, total are required');
   }

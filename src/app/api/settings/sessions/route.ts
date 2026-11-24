@@ -16,15 +16,14 @@ export async function GET(req: NextRequest) {
       take: 20,
     });
 
-    // Mark the most-recent session as "current" (best-effort heuristic)
     return NextResponse.json({
-      sessions: sessions.map((s, idx) => ({
+      sessions: sessions.map((s) => ({
         id: s.id,
         device: s.deviceInfo,
         ip: s.ipAddress || '—',
         location: s.location || 'Unknown',
         lastActive: timeAgo(s.lastActiveAt),
-        current: idx === 0,
+        current: s.id === payload.sid,
       })),
     });
   } catch (err) {

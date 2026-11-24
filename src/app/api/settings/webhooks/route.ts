@@ -1,3 +1,5 @@
+import { canManageTeam } from '@/lib/team-roles';
+import { publicUrl } from '@/lib/public-http';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
@@ -38,7 +40,9 @@ export async function POST(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload || !payload.companyId) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
+    if (!canManageTeam(payload.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const data = await req.json();
+    try { publicUrl(data?.url, true); } catch { return NextResponse.json({ error: 'Webhook origin not approved' }, { status: 400 }); }
     if (!data.url) return NextResponse.json({ error: 'URL is required' }, { status: 400 });
 
     const secret = crypto.randomUUID().replace(/-/g, '').slice(0, 32);

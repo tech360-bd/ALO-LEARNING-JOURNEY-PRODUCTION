@@ -122,7 +122,7 @@ export async function retrieveMemories(
  * conversational, human tone. Falls back to rule-based humanization
  * when the LLM is unavailable.
  */
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 
 export async function humanizeText(
   text: string,
@@ -130,7 +130,7 @@ export async function humanizeText(
 ): Promise<string> {
   // Try LLM first
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const completion = await zai.chat.completions.create({
       messages: [
         {
@@ -222,7 +222,7 @@ export async function generateImage(
   size: '1024x1024' | '768x1344' | '864x1152' | '1344x768' | '1152x864' = '1024x1024',
 ): Promise<{ url: string; prompt: string } | null> {
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const result = await zai.images.generations.create({
       prompt,
       size,
@@ -243,7 +243,7 @@ export async function generateVideo(
   prompt: string,
 ): Promise<{ videoUrl: string; taskId: string; status: string } | null> {
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     // The SDK supports video generation via async API
     const result = await zai.video.generations.create({
       prompt,
@@ -270,7 +270,7 @@ export async function generateSpeech(
   voice: string = 'default',
 ): Promise<{ audioUrl: string; duration?: number } | null> {
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const result = await zai.audio.tts.create({
       input: text,
       voice,

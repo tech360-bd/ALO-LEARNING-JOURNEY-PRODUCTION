@@ -1,3 +1,4 @@
+import { canManageTeam } from '@/lib/team-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
@@ -9,11 +10,12 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     const payload = await verifyToken(token);
     if (!payload || !payload.companyId) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
+    if (!canManageTeam(payload.role)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const { id } = await params;
     const existing = await db.webhook.findFirst({ where: { id, companyId: payload.companyId } });
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    await db.webhook.delete({ where: { id } });
+    await db.webhook.delete({ where: { id, companyId: payload.companyId } });
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error('[DELETE /api/settings/webhooks/[id]]', err);

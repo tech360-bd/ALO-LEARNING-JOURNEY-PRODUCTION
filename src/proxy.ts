@@ -9,7 +9,9 @@ import {
 import { verifyMediaToken } from "@/lib/media-token";
 
 const STATIC_PREFIXES = ["/_next/"];
-const STATIC_PATHS = new Set(["/favicon.ico", "/robots.txt", "/sitemap.xml", "/logo.svg"]);
+const STATIC_PATHS = new Set(["/favicon.ico", "/robots.txt", "/sitemap.xml", "/logo.svg",
+  ...["Regular", "Medium", "SemiBold", "Bold"].map(weight => `/fonts/HindSiliguri-${weight}.ttf`),
+]);
 const PROTECTED_MEDIA_PREFIXES = [
   "/avatar-videos/",
   "/avatar-audio/",

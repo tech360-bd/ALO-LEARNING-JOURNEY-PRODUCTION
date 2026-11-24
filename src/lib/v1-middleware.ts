@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * v1 API middleware — auth + tenant context + JSON helpers.
  *
@@ -32,27 +31,24 @@ export interface V1SessionNone {
 
 export async function getSessionContext(request: Request): Promise<V1SessionContext | V1SessionNone> {
   const sessionUser = await getSessionUser(request);
-  if (!sessionUser) {
+  if (!sessionUser?.userId || !sessionUser.companyId) {
     return { authenticated: false, redirect: '/login' };
   }
 
-  // Resolve companyId from the companyUser link
-  let companyId = sessionUser.companyId;
-  if (!companyId) {
-    const link = await db.companyUser.findFirst({
-      where: { userId: sessionUser.userId },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (!link) return { authenticated: false, redirect: '/login' };
-    companyId = link.companyId;
-  }
+  // A tenant-scoped credential must never silently select another workspace.
+  // Match the workspace selected in the bound credential.
+  const member = await db.companyUser.findFirst({
+    where: { userId: sessionUser.userId, companyId: sessionUser.companyId, user: { isActive: true } },
+    select: { role: true },
+  });
+  if (!member || member.role !== sessionUser.role) return { authenticated: false, redirect: '/login' };
 
   return {
     userId: sessionUser.userId,
     email: sessionUser.email,
-    role: sessionUser.role,
-    companyId,
-    isSuperAdmin: sessionUser.isSuperAdmin,
+    role: member.role,
+    companyId: sessionUser.companyId,
+    isSuperAdmin: member.role === 'super_admin',
     authenticated: true,
   };
 }

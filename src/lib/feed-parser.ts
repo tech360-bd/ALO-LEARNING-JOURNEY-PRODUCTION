@@ -1,3 +1,4 @@
+import { publicHttp } from './public-http';
 /**
  * Minimal RSS/Atom feed parser — no external dependencies.
  * Supports RSS 2.0, RSS 1.0 (RDF), and Atom 1.0 feeds.
@@ -27,23 +28,11 @@ export interface ParsedFeedItem {
  */
 export async function fetchAndParseFeed(feedUrl: string): Promise<ParsedFeed | null> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(feedUrl, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; MarketingOS/1.0; rss-reader)',
-        Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-      },
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
-    if (!res.ok) return null;
-
-    const xml = await res.text();
+    const { status, text: xml } = await publicHttp(feedUrl);
+    if (status < 200 || status >= 300) return null;
     return parseFeedXml(xml, feedUrl);
   } catch (err) {
-    console.error('[fetchAndParseFeed] failed:', feedUrl, err);
+    console.warn('[fetchAndParseFeed] request failed');
     return null;
   }
 }

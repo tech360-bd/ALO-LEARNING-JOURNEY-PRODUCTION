@@ -559,11 +559,12 @@ export function BillingView() {
     try {
       await api.post('/api/v1/billing/payments', {
         invoiceId: inv.id,
+        provider: 'manual',
         amount: inv.total,
         currency: inv.currency,
         method: 'card',
       });
-      toast.success(`Payment submitted for ${inv.invoiceNumber}`);
+      toast.success(`Pending request recorded for ${inv.invoiceNumber}; no payment has been collected`);
       refetchInvoices();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Payment failed');

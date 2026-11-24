@@ -13,8 +13,8 @@ async function main() {
   process.env.ADMIN_PASSWORD_HASH = `scrypt$${"a".repeat(22)}$${"b".repeat(86)}`;
   process.env.NEXTAUTH_SECRET = "admin-session-secret-for-tests";
   process.env.JWT_SECRET = "marketing-tenant-secret-for-tests";
-  const token = await new SignJWT({ userId: "user1", companyId: "company1", role: "super_admin" })
-    .setProtectedHeader({ alg: "HS256" }).setExpirationTime("1h")
+  const token = await new SignJWT({ sid: "smoke-session", userId: "user1", companyId: "company1", role: "super_admin" })
+    .setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("1h")
     .sign(new TextEncoder().encode(process.env.JWT_SECRET));
   const session = await encode({ secret: process.env.NEXTAUTH_SECRET, token: { sub: "dev-admin" } });
   const request = (path: string, headers: Record<string, string> = {}) =>

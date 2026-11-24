@@ -130,6 +130,9 @@ jobs:
         run: |
           npm test
           bash scripts/test-deploy-rollback.sh
+          TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-tenant-workflows.ts
+          node scripts/verify-media-pipeline.mjs
+          TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-photo-video-workflow.ts
 
       # Built without JWT_SECRET / VAULT_MASTER_KEY on purpose, like the server
       # build in scripts/deploy-production.sh: MarketingOS secrets are runtime-only
@@ -148,39 +151,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Check for hardcoded secrets
+      - name: Test redaction and scan candidate tree
         run: |
-          set -euo pipefail
-          # A credential-like key (any case, optionally quoted, e.g. apiKey,
-          # OPENAI_API_KEY, "client_secret") assigned a quoted literal with no
-          # whitespace: passwords >= 6 chars, other secrets >= 10 chars. Real
-          # credentials contain no spaces, so UI labels such as
-          # `missing_api_key: "Missing API key"` are not flagged. Excludes
-          # dependencies, build output, archived uploads, the separate
-          # marketingos/ sub-project, and scripts/ + tests/ fixtures.
-          PATTERN="(password|passwd)['\"]?\s*[:=]\s*['\"][^'\"[:space:]]{6,}['\"]|(secret|api[_-]?key|access[_-]?token)['\"]?\s*[:=]\s*['\"][^'\"[:space:]]{10,}['\"]|(mysql|postgres|postgresql)://[^'\"[:space:]:]+:[^'\"[:space:]@]{6,}@"
-          FOUND=$(grep -rEni "${PATTERN}" \
-            --include="*.ts" --include="*.tsx" --include="*.js" --include="*.mjs" --include="*.cjs" \
-            --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=dist \
-            --exclude-dir=upload --exclude-dir=marketingos --exclude-dir=mini-services \
-            --exclude-dir=examples --exclude-dir=scripts --exclude-dir=tests \
-            . || true)
-          if [ -n "${FOUND}" ]; then
-            echo "::error::Possible hardcoded secrets found:"
-            echo "${FOUND}"
-            echo ""
-            echo "Move these to environment variables before committing."
-            exit 1
-          fi
-          echo "No hardcoded secrets found"
-
-      - name: Check .env is not tracked
-        run: |
-          if git ls-files | grep -E "(^|/)\.env$"; then
-            echo "::error::.env is tracked in git. Run: git rm --cached .env"
-            exit 1
-          fi
-          echo ".env is not tracked"
+          node --test tests/secret-scanner.test.mjs
+          node scripts/scan-secrets.mjs
 
       - name: Check database files are not tracked
         run: |

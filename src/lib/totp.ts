@@ -16,7 +16,10 @@ const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 /** Generate a new random TOTP secret (32 base32 chars ≈ 160 bits). */
 export function generateTotpSecret(lengthBytes = 20): string {
-  const bytes = randomBytes(lengthBytes);
+  return encodeBase32(randomBytes(lengthBytes));
+}
+
+function encodeBase32(bytes: Buffer): string {
   let bits = 0;
   let value = 0;
   let output = '';
@@ -78,15 +81,26 @@ export function computeTotp(secret: string, unixSeconds = Math.floor(Date.now() 
  * Uses `timingSafeEqual` so the comparison is constant-time.
  */
 export function verifyTotp(secret: string, code: string, unixSeconds = Math.floor(Date.now() / 1000)): boolean {
-  if (!code || !/^\d{4,8}$/.test(code)) return false;
-  const padded = code.padStart(DIGITS, '0');
-  for (let offset = -1; offset <= 1; offset++) {
-    const expected = computeTotp(secret, unixSeconds + offset * STEP_SECONDS);
-    if (expected.length === padded.length && timingSafeEqual(Buffer.from(expected), Buffer.from(padded))) {
-      return true;
-    }
+  return matchingTotpStep(secret, code, unixSeconds) !== null;
+}
+
+// The legacy setup handler encrypted base64 of exactly 20 bytes. New secrets
+// use an explicit prefix inside the existing encrypted envelope (no DB rewrite).
+export function enrollmentSecret(stored: string): string {
+  if (/^b32:[A-Z2-7]{32}$/.test(stored)) return stored.slice(4);
+  if (/^[A-Za-z0-9+/]{27}=$/.test(stored)) return encodeBase32(Buffer.from(stored, 'base64'));
+  throw new Error('Invalid enrollment format');
+}
+
+export function matchingTotpStep(secret: string, code: unknown, unixSeconds = Math.floor(Date.now() / 1000)): number | null {
+  if (typeof code !== 'string' || !/^\d{6}$/.test(code)) return null;
+  for (const offset of [0, -1, 1]) {
+    const step = Math.floor(unixSeconds / STEP_SECONDS) + offset;
+    if (step < 0) continue;
+    const expected = computeTotp(secret, step * STEP_SECONDS);
+    if (timingSafeEqual(Buffer.from(expected), Buffer.from(code))) return step * STEP_SECONDS;
   }
-  return false;
+  return null;
 }
 
 /**

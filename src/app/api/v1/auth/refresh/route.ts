@@ -4,8 +4,8 @@
  */
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
-import { createToken } from '@/lib/auth';
-import { createHash, randomBytes } from 'crypto';
+import { issueSessionToken } from '@/lib/auth';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,7 +15,7 @@ function sha256(s: string): string {
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
-  if (!body?.refreshToken) {
+  if (typeof body?.refreshToken !== 'string' || !body.refreshToken || body.refreshToken.length > 512) {
     return Response.json({ error: 'refreshToken required' }, { status: 400 });
   }
 
@@ -35,30 +35,23 @@ export async function POST(request: NextRequest) {
   const newHash = sha256(newRefreshToken);
   const newExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
 
-  // Rotate
-  const newTokenRow = await db.refreshToken.create({
-    data: {
-      userId: stored.userId,
-      tokenHash: newHash,
-      companyId: stored.companyId,
-      expiresAt: newExpiresAt,
-      userAgent: stored.userAgent,
-      ipAddress: stored.ipAddress,
-    },
+  const companyUser = stored.user.companyUsers.find(link => link.companyId === stored.companyId);
+  if (!stored.user.isActive || !companyUser) return Response.json({ error: 'inactive membership' }, { status: 401 });
+  const accessToken = await db.$transaction(async tx => {
+    const successor = randomUUID();
+    const used = await tx.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null, rotatedTo: null, expiresAt: { gt: new Date() } },
+      data: { rotatedTo: successor },
+    });
+    if (used.count !== 1) return false;
+    await tx.refreshToken.create({ data: {
+      id: successor, userId: stored.userId, tokenHash: newHash, companyId: stored.companyId,
+      expiresAt: newExpiresAt, userAgent: stored.userAgent, ipAddress: stored.ipAddress,
+    } });
+    await tx.userSession.deleteMany({ where: { id: stored.id, userId: stored.userId } });
+    return issueSessionToken(tx, { userId: stored.userId, email: stored.user.email, role: companyUser.role, companyId: stored.companyId }, stored.userAgent, successor);
   });
-  await db.refreshToken.update({
-    where: { id: stored.id },
-    data: { rotatedTo: newTokenRow.id },
-  });
-
-  // Issue new access token
-  const companyUser = stored.user.companyUsers[0];
-  const accessToken = await createToken({
-    userId: stored.user.id,
-    email: stored.user.email,
-    role: companyUser?.role || 'team_member',
-    companyId: companyUser?.companyId || '',
-  });
+  if (!accessToken) return Response.json({ error: 'refresh token no longer valid' }, { status: 401 });
 
   return Response.json({
     accessToken,

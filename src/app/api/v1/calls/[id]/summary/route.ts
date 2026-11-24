@@ -20,7 +20,7 @@
  * Body: { "regenerate": false }   // optional — set true to force regeneration
  */
 import { NextRequest } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 import { db } from '@/lib/db';
 import { getSessionContext, unauthorized, ok, notFound, badRequest } from '@/lib/v1-middleware';
 import { emitEvent } from '@/lib/events';
@@ -102,7 +102,7 @@ function serialize(s: any) {
 async function generateSummary(call: any) {
   // Call Z.AI (free) for the LLM summary. Real production would use the
   // chain config from src/lib/ai-chain.ts with fallbacks.
-  const zai = await ZAI.create();
+  const zai = await createApprovedZai();
   const prompt = `Analyze this call transcript and respond as JSON ONLY with these keys:
 - intent: short string (what the caller wanted)
 - summary: 1-2 paragraph plain-text summary

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { emitEvent } from '@/lib/events';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function POST(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
     if (!topic) return NextResponse.json({ error: 'topic required' }, { status: 400 });
     let script = '', storyboard: any[] = [];
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const completion = await zai.chat.completions.create({
         messages: [{ role: 'system', content: `Create a ${body.duration || 30}s cinematic video script about: ${topic}. Return JSON: {"title":"","script":"","storyboard":[]}` }, { role: 'user', content: topic }],
         thinking: { type: 'disabled' },

@@ -1,3 +1,4 @@
+import { canManageTeam, canAssignTeamRole } from '@/lib/team-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken, hashPassword, ROLE_LABELS } from '@/lib/auth';
@@ -87,17 +88,19 @@ export async function POST(req: NextRequest) {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);
-    if (!payload || !payload.companyId) {
+    if (!payload || !payload.companyId || !payload.userId) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const adminRoles = ['super_admin', 'company_owner', 'admin'];
-    if (!adminRoles.includes(payload.role)) {
-      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
-    }
+    const membership = await db.companyUser.findFirst({
+      where: { companyId: payload.companyId, userId: payload.userId, user: { isActive: true } },
+      select: { role: true },
+    });
+    if (!canManageTeam(membership?.role)) return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
 
     const body = await req.json();
     const { name, email, password, role } = body;
+    if (!canAssignTeamRole(membership?.role, role ?? 'team_member')) return NextResponse.json({ error: 'Role not assignable' }, { status: 403 });
     if (!name || !email || !password) {
       return NextResponse.json({ error: 'Name, email, and password are required' }, { status: 400 });
     }
@@ -113,19 +116,8 @@ export async function POST(req: NextRequest) {
     const passwordHash = await hashPassword(String(password));
     const user = await db.user.create({
       data: {
-        name: String(name),
-        email: String(email),
-        passwordHash,
-        isActive: true,
-      },
-    });
-
-    await db.companyUser.create({
-      data: {
-        userId: user.id,
-        companyId: payload.companyId,
-        role: role || 'team_member',
-        permissions: '{}',
+        name: String(name), email: String(email), passwordHash, isActive: true,
+        companyUsers: { create: { companyId: payload.companyId, role: role ?? 'team_member', permissions: '{}' } },
       },
     });
 

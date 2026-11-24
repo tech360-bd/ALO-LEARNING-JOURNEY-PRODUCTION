@@ -11,10 +11,10 @@ export async function GET(req: NextRequest) {
     if (!payload) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
     const user = await db.user.findUnique({ where: { id: payload.userId } });
-    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    if (!user || !user.isActive) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
     const companyUser = await db.companyUser.findFirst({
-      where: { userId: user.id },
+      where: { userId: user.id, companyId: payload.companyId || '' },
       include: { company: true },
     });
 

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { emitEvent } from '@/lib/events';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function POST(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     const config = JSON.parse(avatar.config || '{}');
     let videoTaskId = null, videoStatus = 'pending';
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const videoBody: any = { prompt: body.script.slice(0, 500), quality: 'quality', with_audio: true, size: '1920x1080', duration: body.duration || 15 };
       if (config.faceImageUrl && !config.faceImageUrl.startsWith('data:')) videoBody.image_url = config.faceImageUrl;
       const result = await zai.video.generations.create(videoBody);
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     } catch { videoStatus = 'rate_limited'; }
     let audioUrl = null;
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const tts = await zai.audio.tts.create({ input: body.script, voice: config.voiceId || 'default' });
       audioUrl = tts.url || null;
     } catch {}

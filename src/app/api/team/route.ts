@@ -1,3 +1,4 @@
+import { canManageTeam, canAssignTeamRole, teamRoleKey } from '@/lib/team-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken, ROLE_LABELS } from '@/lib/auth';
@@ -85,11 +86,22 @@ export async function POST(req: NextRequest) {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);
-    if (!payload || !payload.companyId) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    if (!payload || !payload.companyId || !payload.userId) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+
+    const membership = await db.companyUser.findFirst({
+      where: { companyId: payload.companyId, userId: payload.userId, user: { isActive: true } },
+      select: { role: true },
+    });
+    if (!canManageTeam(membership?.role)) return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
 
     const companyId = payload.companyId;
     const body = await req.json();
     const action = body.action;
+    const requestedRole = teamRoleKey(body.role ?? 'team_member');
+
+    if ((action === 'invite' || action === 'update_role') && !canAssignTeamRole(membership?.role, requestedRole)) {
+      return NextResponse.json({ error: 'Role not assignable' }, { status: 403 });
+    }
 
     if (action === 'invite') {
       const { email, role } = body;
@@ -98,7 +110,7 @@ export async function POST(req: NextRequest) {
       const invitation = await db.invitation.create({
         data: {
           email: String(email),
-          role: role || 'team_member',
+          role: requestedRole,
           token: inviteToken,
           expiresAt: new Date(Date.now() + 7 * 86400000),
           companyId,
@@ -121,9 +133,10 @@ export async function POST(req: NextRequest) {
       if (!companyUserId || !role) return NextResponse.json({ error: 'companyUserId and role are required' }, { status: 400 });
       const target = await db.companyUser.findFirst({ where: { id: companyUserId, companyId } });
       if (!target) return NextResponse.json({ error: 'Member not found' }, { status: 404 });
+      if (!canAssignTeamRole(membership?.role, teamRoleKey(target.role))) return NextResponse.json({ error: 'Protected member' }, { status: 403 });
       const updated = await db.companyUser.update({
-        where: { id: companyUserId },
-        data: { role },
+        where: { id: companyUserId, companyId, role: target.role },
+        data: { role: requestedRole },
       });
       await db.mosAuditLog.create({
         data: {
@@ -142,18 +155,21 @@ export async function POST(req: NextRequest) {
       if (!companyUserId) return NextResponse.json({ error: 'companyUserId is required' }, { status: 400 });
       const target = await db.companyUser.findFirst({ where: { id: companyUserId, companyId } });
       if (!target) return NextResponse.json({ error: 'Member not found' }, { status: 404 });
-      // Unlink assigned leads/tickets first
-      await db.mosLead.updateMany({ where: { assignedToId: companyUserId }, data: { assignedToId: null } });
-      await db.ticket.updateMany({ where: { assignedToId: companyUserId }, data: { assignedToId: null } });
-      await db.companyUser.delete({ where: { id: companyUserId } });
-      await db.mosAuditLog.create({
-        data: {
-          action: 'remove_member',
-          resource: `Member: ${companyUserId}`,
-          details: 'Removed from company',
-          userId: payload.userId,
-          companyId,
-        },
+      if (!canAssignTeamRole(membership?.role, teamRoleKey(target.role))) return NextResponse.json({ error: 'Protected member' }, { status: 403 });
+      await db.$transaction(async tx => {
+        // Unlink assigned leads/tickets first
+        await tx.mosLead.updateMany({ where: { assignedToId: companyUserId }, data: { assignedToId: null } });
+        await tx.ticket.updateMany({ where: { assignedToId: companyUserId }, data: { assignedToId: null } });
+        await tx.companyUser.delete({ where: { id: companyUserId, companyId, role: target.role } });
+        await tx.mosAuditLog.create({
+          data: {
+            action: 'remove_member',
+            resource: `Member: ${companyUserId}`,
+            details: 'Removed from company',
+            userId: payload.userId,
+            companyId,
+          },
+        });
       });
       return NextResponse.json({ success: true });
     }
@@ -163,6 +179,7 @@ export async function POST(req: NextRequest) {
       if (!invitationId) return NextResponse.json({ error: 'invitationId is required' }, { status: 400 });
       const inv = await db.invitation.findFirst({ where: { id: invitationId, companyId } });
       if (!inv) return NextResponse.json({ error: 'Invitation not found' }, { status: 404 });
+      if (!canAssignTeamRole(membership?.role, teamRoleKey(inv.role))) return NextResponse.json({ error: 'Protected invitation' }, { status: 403 });
       await db.invitation.update({
         where: { id: invitationId },
         data: { expiresAt: new Date(Date.now() + 7 * 86400000) },
@@ -175,7 +192,8 @@ export async function POST(req: NextRequest) {
       if (!invitationId) return NextResponse.json({ error: 'invitationId is required' }, { status: 400 });
       const inv = await db.invitation.findFirst({ where: { id: invitationId, companyId } });
       if (!inv) return NextResponse.json({ error: 'Invitation not found' }, { status: 404 });
-      await db.invitation.delete({ where: { id: invitationId } });
+      if (!canAssignTeamRole(membership?.role, teamRoleKey(inv.role))) return NextResponse.json({ error: 'Protected invitation' }, { status: 403 });
+      await db.invitation.delete({ where: { id: invitationId, companyId, role: inv.role } });
       return NextResponse.json({ success: true });
     }
 

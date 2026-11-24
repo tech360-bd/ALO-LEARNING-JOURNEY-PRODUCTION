@@ -22,7 +22,7 @@ setInterval(() => {
       rateLimitStore.delete(key);
     }
   }
-}, 60_000);
+}, 60_000).unref();
 
 export interface RateLimitOptions {
   maxRequests?: number;
