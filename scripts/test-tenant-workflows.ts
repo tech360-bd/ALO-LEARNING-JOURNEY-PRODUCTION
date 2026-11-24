@@ -123,8 +123,13 @@ async function main() {
   } finally { await db.$disconnect(); }
 }
 main().catch(error => {
-  // Preserve the assertion line in CI logs; message-only output made the
-  // original combined workflow step impossible to diagnose.
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  // Preserve the assertion line in CI logs and publish it as an Actions
+  // annotation so it remains visible even when the hosted log archive cannot
+  // be retrieved. The test uses disposable data and never includes secrets.
+  const details = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(details);
+  const annotation = details.split(/\r?\n/).slice(0, 12).join(' | ').slice(0, 3000)
+    .replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+  console.error(`::error title=Tenant integration failure::${annotation}`);
   process.exitCode = 1;
 });
