@@ -983,8 +983,14 @@ model Content {
   company       MosCompany  @relation(fields: [companyId], references: [id])
   campaignId    String?
   campaign      MosCampaign? @relation(fields: [campaignId], references: [id])
+  // Atomic, expiring claim for the social-publish cron. Lease fields stay
+  // separate from engagement JSON so MySQL can enforce expiry in UPDATE WHERE.
+  publishClaimToken String? @db.VarChar(64)
+  publishLeaseUntil DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
+  @@index([status, scheduledAt])
 }
 
 // ==================== CAMPAIGNS ====================

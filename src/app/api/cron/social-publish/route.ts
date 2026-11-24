@@ -1,36 +1,28 @@
 /**
  * GET /api/cron/social-publish
  *
- * Cron job — runs every minute (configure external scheduler like systemd
- * timer or GitHub Actions cron to hit this endpoint).
- *
- * Picks up Content rows where:
- *   - status = 'scheduled'
- *   - scheduledAt <= now
- *   - platform is a real social platform (not blog/email)
- *   - engagement field does NOT contain postizPostId (not yet published)
- *
- * For each, calls publishPost() to actually deliver via Postiz. On success,
- * marks status='published' + stores postizPostId + platformPostIds in the
- * engagement JSON (audit evidence). On failure, leaves status='scheduled'
- * and increments a retry counter (in the engagement JSON) — after 3 retries
- * the row is marked 'failed' so it stops being picked up.
- *
- * Auth: protected by CRON_SECRET env var (sent as Bearer token). If unset,
- * the endpoint refuses to run.
+ * MySQL conditional updates lease each due row before provider calls. A worker
+ * may finalize only while its exact claim token and unexpired lease still own
+ * the row. Provider idempotency/reconciliation is not assumed; ambiguous results
+ * become a durable `unknown` state and are never automatically re-sent.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { publishPost, isPostizConfigured } from '@/lib/postiz-adapter';
+import {
+  claimScheduledContent,
+  finalizeClaim,
+  markClaimSending,
+  parsePublishMetadata,
+  SOCIAL_PUBLISH_MAX_RETRIES,
+} from '@/lib/social-publish-claims';
 import { emitEvent } from '@/lib/events';
 
 export const dynamic = 'force-dynamic';
 
-const MAX_RETRIES = 3;
 const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'x', 'tiktok', 'youtube'];
 
 export async function GET(request: NextRequest) {
-  // Auth via CRON_SECRET
   const authHeader = request.headers.get('authorization') || '';
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
@@ -41,111 +33,118 @@ export async function GET(request: NextRequest) {
   }
 
   if (!isPostizConfigured()) {
-    return NextResponse.json({
-      ok: true,
-      simulated: true,
-      message: 'Postiz not configured — no posts to publish. Set POSTIZ_* env vars to enable.',
-      processed: 0,
-    });
+    return NextResponse.json({ ok: true, simulated: true, processed: 0, message: 'Postiz not configured — no posts were sent.' });
   }
 
   const now = new Date();
-  const due = await db.content.findMany({
-    where: {
-      status: 'scheduled',
-      scheduledAt: { lte: now },
-      platform: { in: PLATFORMS },
-    },
-    take: 20, // process at most 20 per minute to avoid rate limits
+  const candidates = await db.content.findMany({
+    where: { status: 'scheduled', scheduledAt: { lte: now }, platform: { in: PLATFORMS } },
+    orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+    take: 20,
   });
 
   let published = 0;
   let failed = 0;
   let retried = 0;
+  let unknown = 0;
+  let busy = 0;
   const errors: Array<{ contentId: string; error: string }> = [];
 
-  for (const content of due) {
-    // Parse retry count from engagement JSON
-    let engagementData: any = {};
-    try { engagementData = content.engagement ? JSON.parse(content.engagement) : {}; } catch { /* ignore */ }
+  for (const content of candidates) {
+    const metadata = parsePublishMetadata(content.engagement);
+    if (metadata.postizPostId || metadata.publishingState === 'published') continue;
+    if (metadata.publishingState === 'unknown') { unknown++; continue; }
 
-    // Skip if already has a real postizPostId (already published)
-    if (engagementData.postizPostId) continue;
-
-    const retryCount = engagementData.retryCount || 0;
-    if (retryCount >= MAX_RETRIES) {
-      // Mark as failed so we stop retrying
-      await db.content.update({
-        where: { id: content.id },
-        data: { status: 'failed' },
+    if (Number(metadata.retryCount || 0) >= SOCIAL_PUBLISH_MAX_RETRIES && !content.publishClaimToken) {
+      const marked = await db.content.updateMany({
+        where: { id: content.id, status: 'scheduled', publishClaimToken: null, engagement: content.engagement ?? '{}' },
+        data: { status: 'failed', engagement: JSON.stringify({ ...metadata, publishingState: 'failed' }) },
       });
-      failed++;
+      if (marked.count === 1) failed++;
       continue;
     }
 
-    // Try to publish via Postiz
+    const claimed = await claimScheduledContent(db, content, now);
+    if (claimed.kind === 'unknown') { unknown++; continue; }
+    if (claimed.kind !== 'claimed') { busy++; continue; }
+
+    const sending = await markClaimSending(db, claimed.claim, new Date());
+    if (!sending?.sendingEngagement) { busy++; continue; }
+
     const result = await publishPost({
       contentId: content.id,
       text: content.body || content.title,
       platforms: [content.platform] as any,
       mediaUrls: content.mediaUrl ? [content.mediaUrl] : [],
+      attemptKey: claimed.claim.attemptKey,
     });
 
-    if (result.simulated || result.httpStatus !== 200) {
-      // Increment retry count
-      engagementData.retryCount = retryCount + 1;
-      engagementData.lastError = result.error?.slice(0, 500);
-      engagementData.lastRetryAt = new Date().toISOString();
-      await db.content.update({
-        where: { id: content.id },
-        data: { engagement: JSON.stringify(engagementData) },
+    const sendingMetadata = parsePublishMetadata(sending.sendingEngagement);
+    const finishedAt = new Date();
+
+    if (result.outcome === 'accepted' && result.postizPostId) {
+      const publishedMetadata: Record<string, any> = {
+        ...sendingMetadata,
+        publishingState: 'published',
+        postizPostId: result.postizPostId,
+        platformPostIds: result.platformPostIds || [],
+        publishedAt: finishedAt.toISOString(),
+        publishedVia: 'postiz',
+      };
+      delete publishedMetadata.lastError;
+      delete publishedMetadata.retryCount;
+      const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+        status: 'published', publishedAt: finishedAt, engagement: JSON.stringify(publishedMetadata),
+      }, finishedAt);
+      if (!saved) { busy++; continue; }
+
+      await emitEvent({
+        type: 'social.post_published', companyId: content.companyId, resource: 'content', resourceId: content.id,
+        metadata: {
+          postizPostId: result.postizPostId, platformPostIds: result.platformPostIds,
+          platform: content.platform, scheduledAt: content.scheduledAt?.toISOString(), publishedAt: finishedAt.toISOString(),
+        },
       });
-      retried++;
-      errors.push({ contentId: content.id, error: result.error || 'simulated' });
+      published++;
       continue;
     }
 
-    // Success!
-    engagementData.postizPostId = result.postizPostId;
-    engagementData.platformPostIds = result.platformPostIds;
-    engagementData.publishedAt = new Date().toISOString();
-    engagementData.publishedVia = 'postiz';
-    delete engagementData.retryCount;
-    delete engagementData.lastError;
+    if (result.outcome === 'rejected') {
+      const retryCount = Number(sendingMetadata.retryCount || 0) + 1;
+      const nextState = retryCount >= SOCIAL_PUBLISH_MAX_RETRIES ? 'failed' : 'retryable';
+      const retryMetadata = {
+        ...sendingMetadata, publishingState: nextState, retryCount,
+        lastError: result.error?.slice(0, 200) || 'provider_rejected', lastRetryAt: finishedAt.toISOString(),
+      };
+      const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+        ...(nextState === 'failed' ? { status: 'failed' } : {}),
+        engagement: JSON.stringify(retryMetadata),
+      }, finishedAt);
+      if (saved) {
+        if (nextState === 'failed') failed++;
+        else retried++;
+      } else busy++;
+      if (result.error) errors.push({ contentId: content.id, error: result.error });
+      continue;
+    }
 
-    await db.content.update({
-      where: { id: content.id },
-      data: {
-        status: 'published',
-        publishedAt: new Date(),
-        engagement: JSON.stringify(engagementData),
-      },
-    });
-
-    await emitEvent({
-      type: 'social.post_published',
-      companyId: content.companyId,
-      resource: 'content',
-      resourceId: content.id,
-      metadata: {
-        postizPostId: result.postizPostId,
-        platformPostIds: result.platformPostIds,
-        platform: content.platform,
-        scheduledAt: content.scheduledAt?.toISOString(),
-        publishedAt: new Date().toISOString(),
-      },
-    });
-
-    published++;
+    // Timeouts, redirects, 5xx, malformed success, and connection loss are
+    // uncertain. Persist this state and stop automated retries to avoid dupes.
+    const unknownMetadata = {
+      ...sendingMetadata, publishingState: 'unknown',
+      unknownReason: result.error?.slice(0, 200) || 'provider_outcome_not_confirmed',
+      unknownAt: finishedAt.toISOString(),
+    };
+    const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+      engagement: JSON.stringify(unknownMetadata),
+    }, finishedAt);
+    if (saved) unknown++;
+    else busy++;
+    if (result.error) errors.push({ contentId: content.id, error: result.error });
   }
 
   return NextResponse.json({
-    ok: true,
-    processed: due.length,
-    published,
-    failed,
-    retried,
-    errors: errors.slice(0, 5), // cap error list in response
-    timestamp: now.toISOString(),
+    ok: true, processed: candidates.length, published, failed, retried, unknown, busy,
+    errors: errors.slice(0, 5), timestamp: now.toISOString(),
   });
 }

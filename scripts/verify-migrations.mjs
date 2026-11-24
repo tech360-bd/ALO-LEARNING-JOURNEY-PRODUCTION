@@ -67,10 +67,17 @@ function readMigration(directory) {
     references: parseColumns(match[4]),
     onDelete: normalizeAction(match[5]),
   }));
+  const alterStatements = [...executableSql.matchAll(/ALTER\s+TABLE\s+`([^`]+)`([\s\S]*?);/gi)];
+  const alterColumns = alterStatements.flatMap((statement) => [...statement[2].matchAll(/ADD\s+COLUMN\s+`([^`]+)`\s+([A-Z]+(?:\([^)]*\))?)\s+(NULL|NOT\s+NULL)/gi)].map((column) => ({
+    table: statement[1], name: column[1], type: normalizeType(column[2]), nullable: /^NULL$/i.test(column[3]),
+  })));
+  const alterIndexes = alterStatements.flatMap((statement) => [...statement[2].matchAll(/ADD\s+(UNIQUE\s+)?INDEX\s+`[^`]+`\s*\(([^)]+)\)/gi)].map((index) => ({
+    table: statement[1], kind: index[1] ? 'UNIQUE' : 'INDEX', fields: parseColumns(index[2]),
+  })));
   // String literals (e.g. JSON defaults like '["chat"]') are data, not SQL: blank
   // them before the destructive-statement and identifier-quoting heuristics.
   const sqlWithoutLiterals = executableSql.replace(/'(?:[^'\\]|\\.|'')*'/g, "''");
-  return { sql, executableSql, sqlWithoutLiterals, tableDefinitions, alterForeignKeys };
+  return { sql, executableSql, sqlWithoutLiterals, tableDefinitions, alterForeignKeys, alterColumns, alterIndexes };
 }
 
 function parsePrismaModels(schema) {
@@ -226,8 +233,9 @@ const expectedDirectories = [
   "20261010000001_admin_otp_challenges",
   "20261018000000_v2_additive_mysql_tables",
   "20261111000000_marketingos_workforce_tables",
+  "20261124000000_social_publish_claims",
 ];
-assert(JSON.stringify(directories) === JSON.stringify(expectedDirectories), "Migration directories differ from the reviewed six-migration MySQL chain.");
+assert(JSON.stringify(directories) === JSON.stringify(expectedDirectories), "Migration directories differ from the reviewed seven-migration MySQL chain.");
 assert(readFileSync(lockPath, "utf8").trim() === 'provider = "mysql"', "Migration lock provider is not exactly MySQL.");
 
 const addedModels = new Set([
@@ -243,6 +251,7 @@ const expectedByMigration = new Map([
   ["20261010000001_admin_otp_challenges", { models: [...otpModels] }],
   ["20261018000000_v2_additive_mysql_tables", { models: ["Client", "Project", "Invoice", "MarketingCampaign", "MarketingLead", "OtpRequest", "VoiceGeneration", "AudioTranscription"] }],
   ["20261111000000_marketingos_workforce_tables", { models: marketingOsModels }],
+  ["20261124000000_social_publish_claims", { models: [], alterOnly: true }],
 ]);
 
 const createdTables = new Set();
@@ -251,7 +260,7 @@ for (const directory of directories) {
   const parsed = readMigration(directory);
   const contract = expectedByMigration.get(directory);
   const expectedModels = contract.models ?? contract.expected;
-  assert(parsed.tableDefinitions.length > 0, `${directory} contains no CREATE TABLE statements.`);
+  assert(parsed.tableDefinitions.length > 0 || contract.alterOnly, `${directory} contains no CREATE TABLE statements.`);
   const actualTables = parsed.tableDefinitions.map((table) => table.name);
   assert(new Set(actualTables).size === actualTables.length, `${directory} creates a table more than once.`);
   assert(JSON.stringify(sorted(actualTables.filter((table) => table !== "_FamilyProfileToFamilyProject"))) === JSON.stringify(sorted(expectedModels.map((name) => modelToTable.get(name)))), `${directory} model table set differs from its reviewed contract.`);
@@ -269,6 +278,18 @@ for (const directory of directories) {
     assert(table, `${directory} adds a foreign key to unknown table ${foreignKey.table}.`);
     const { table: _owner, ...relation } = foreignKey;
     table.relations.push(relation);
+  }
+  for (const column of parsed.alterColumns) {
+    const table = sqlSchemas.get(column.table);
+    assert(table, `${directory} adds a column to unknown table ${column.table}.`);
+    assert(!table.columns.has(column.name), `${directory} adds duplicate column ${column.table}.${column.name}.`);
+    table.columns.set(column.name, column.type);
+    if (!column.nullable) table.notNull.add(column.name);
+  }
+  for (const index of parsed.alterIndexes) {
+    const table = sqlSchemas.get(index.table);
+    assert(table, `${directory} adds an index to unknown table ${index.table}.`);
+    table.indexes.add(`${index.kind}:${index.fields.join(",")}`);
   }
 
   assert(
@@ -357,4 +378,4 @@ assert(familyJoin.relations.length === 2 && familyJoin.relations.every((relation
 const avatarMigration = readMigration("20261007000000_human_avatar_ownership").executableSql;
 assert(/REFERENCES\s+`HumanAvatar`\s*\(`id`\)\s+ON\s+DELETE\s+RESTRICT/i.test(avatarMigration), "AvatarVideo FK must restrict deletion to preserve associated video records.");
 
-console.log(`PASS: ${models.length} Prisma models, ${checkedColumns} scalar column types, indexes, unique constraints, primary keys, foreign keys, and one implicit relation table match six additive MySQL migrations; ${checkedDefaults} TEXT expression defaults use the form MySQL 8 reports to Prisma; no destructive SQL found.`);
+console.log(`PASS: ${models.length} Prisma models, ${checkedColumns} scalar column types, indexes, unique constraints, primary keys, foreign keys, and one implicit relation table match seven additive MySQL migrations; ${checkedDefaults} TEXT expression defaults use the form MySQL 8 reports to Prisma; no destructive SQL found.`);

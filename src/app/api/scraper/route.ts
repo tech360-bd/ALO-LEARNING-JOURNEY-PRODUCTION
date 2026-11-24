@@ -1,4 +1,5 @@
 import { publicHttp } from '@/lib/public-http';
+import { validateScraperUrl } from '@/lib/scraper-url';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
@@ -23,18 +24,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const body = await req.json();
-    const url = String(body.url || '').trim();
+    const body = await req.json().catch(() => null);
+    const url = typeof body?.url === 'string' ? body.url.trim() : '';
     if (!url) return NextResponse.json({ error: 'url is required' }, { status: 400 });
-    if (!/^https?:\/\//i.test(url)) {
-      return NextResponse.json({ error: 'URL must start with http:// or https://' }, { status: 400 });
+    let target: URL;
+    try {
+      target = validateScraperUrl(url);
+    } catch {
+      return NextResponse.json({ error: 'A valid public HTTPS URL is required' }, { status: 400 });
     }
 
     const mode = ['summary', 'metadata', 'full'].includes(body.mode) ? body.mode : 'summary';
 
-    const { status, text: html } = await publicHttp(url);
+    let html: string;
+    let status: number;
+    try {
+      ({ status, text: html } = await publicHttp(target.href));
+    } catch (error) {
+      const blocked = error instanceof Error && /Destination not allowed|Public HTTPS hostname required/.test(error.message);
+      return NextResponse.json({ error: blocked ? 'URL destination is not allowed' : 'Unable to retrieve URL' }, { status: blocked ? 400 : 502 });
+    }
     if (status < 200 || status >= 300) return NextResponse.json({ error: 'Retrieval failed' }, { status: 502 });
-    const finalUrl = url;
+    const finalUrl = target.href;
     const domain = new URL(finalUrl).hostname.replace(/^www\./, '');
 
     // Extract metadata

@@ -7,8 +7,8 @@
   },
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
-    "build:prod": "prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && mkdir -p .next/standalone/scripts .next/standalone/src/lib && cp scripts/long-video-worker.mjs .next/standalone/scripts/ && cp src/lib/local-audio.ts src/lib/long-video-plan.ts .next/standalone/src/lib/",
+    "build:prod": "prisma generate && next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/ && mkdir -p .next/standalone/scripts .next/standalone/src/lib && cp scripts/long-video-worker.mjs .next/standalone/scripts/ && cp src/lib/local-audio.ts src/lib/long-video-plan.ts .next/standalone/src/lib/",
     "start": "NODE_ENV=production node .next/standalone/server.js",
     "start:prod": "NODE_ENV=production node .next/standalone/server.js",
     "start:node": "NODE_ENV=production node .next/standalone/server.js",
