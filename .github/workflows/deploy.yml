@@ -115,7 +115,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:github-runner
-          version: '1.94.2'
+          version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
 
@@ -238,7 +238,7 @@ jobs:
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:github-runner
-          version: '1.94.2'
+          version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
 
