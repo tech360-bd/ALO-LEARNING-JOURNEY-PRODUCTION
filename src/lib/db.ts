@@ -1,6 +1,10 @@
 import { PrismaClient } from "@prisma/client";
 import { createLocalPrismaFallback, MODEL_NAMES } from "./local-db-fallback";
-import { mayFallbackAfterPrismaError, shouldStartInFallback as shouldStartInFallbackPolicy } from "./db-fallback-policy.mjs";
+import {
+  isEngineOrConnectionError,
+  mayFallbackAfterPrismaError,
+  shouldStartInFallback as shouldStartInFallbackPolicy,
+} from "./db-fallback-policy.mjs";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -42,27 +46,6 @@ function shouldFallbackAfterError(error: unknown): boolean {
   if (!mayFallbackAfterPrismaError(process.env.NODE_ENV) || !isEngineOrConnectionError(error)) return false;
   globalForPrisma.useFallback = true;
   return true;
-}
-
-function isEngineOrConnectionError(error: unknown): boolean {
-  const msg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-  return (
-    msg.includes("PrismaClientInitializationError") ||
-    msg.includes("PrismaClientKnownRequestError") ||
-    msg.includes("Query engine") ||
-    msg.includes("engine=none") ||
-    msg.includes("did not initialize yet") ||
-    msg.includes("Please run `prisma generate`") ||
-    msg.includes("Can't reach database server") ||
-    msg.includes("Connection refused") ||
-    msg.includes("Environment variable not found: DATABASE_URL") ||
-    msg.includes("Authentication failed against database server") ||
-    msg.includes("P1000") ||
-    msg.includes("P1001") ||
-    msg.includes("P1002") ||
-    msg.includes("P1003") ||
-    msg.includes("Invalid `prisma.")
-  );
 }
 
 function getFallbackMethod(target: Record<string, any>, name: string): (...args: any[]) => any {
