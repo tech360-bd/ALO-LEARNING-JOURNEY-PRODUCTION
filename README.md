@@ -35,6 +35,8 @@ are rejected at the API boundary.
 - API: `POST /api/video/from-photo` (multipart), `GET /api/video/from-photo`
 - Requires `ffmpeg` + `ffprobe` on the host (or the bundled installers)
 - Contracts, limits and known constraints: [`docs/PHOTO_TO_VIDEO.md`](./docs/PHOTO_TO_VIDEO.md)
+- Long narration videos (1–60 min): [`docs/LONG-VIDEO-STUDIO.md`](./docs/LONG-VIDEO-STUDIO.md) — rendered as local TTS title/caption cards in 2-minute chunks, then merged into one MP4; this is not generated live-action footage.
+- Postiz claim leases and ambiguous delivery handling: [`docs/SOCIAL-PUBLISHING-RELIABILITY.md`](./docs/SOCIAL-PUBLISHING-RELIABILITY.md)
 
 Screens that previously existed in the code but were never mounted — Diagram
 Studio, Marketing Kits, Audio Studio, Admissions CRM, Photo + Voice Clone and

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { SectionHeader, StatusPill } from "./primitives";
+import LongVideoStudio from "./LongVideoStudio";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -227,6 +228,8 @@ export default function VideoPipelineView({ onOpenPhotoStudio }: { onOpenPhotoSt
           </div>
         }
       />
+
+      <LongVideoStudio />
 
       {/* Title + export bar */}
       <Card className="p-4 alo-card-grad border-0">

@@ -10,6 +10,7 @@ export const EXPECTED_MIGRATIONS = [
   "20261010000001_admin_otp_challenges",
   "20261018000000_v2_additive_mysql_tables",
   "20261111000000_marketingos_workforce_tables",
+  "20261124000000_social_publish_claims",
 ];
 
 export function verifyPrismaHistory(tsv, migrationsDirectory) {

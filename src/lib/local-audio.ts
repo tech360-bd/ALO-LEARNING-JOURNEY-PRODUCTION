@@ -235,7 +235,7 @@ export async function synthesizeLocalSpeech(
 ): Promise<{ engine: SpeechEngine; durationSeconds: number }> {
   const content = text.trim();
   if (!content || content.length > 5_000) throw new Error("Speech text must contain 1–5,000 characters");
-  const safeVoice = /^[a-zA-Z0-9_-]{1,24}$/.test(requestedVoice) ? requestedVoice : "bn";
+  const safeVoice = /^[a-zA-Z0-9_+-]{1,24}$/.test(requestedVoice) ? requestedVoice : "bn";
   await mkdir(path.dirname(outputPath), { recursive: true });
 
   // 1st choice: Piper HTTP server with natural Bangla voice model

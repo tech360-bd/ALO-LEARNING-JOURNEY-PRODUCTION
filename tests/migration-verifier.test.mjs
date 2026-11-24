@@ -50,9 +50,9 @@ test("checked-in MySQL migration chain covers every Prisma model without destruc
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /141 Prisma models, 1823 scalar column types/);
+  assert.match(result.stdout, /141 Prisma models, 1825 scalar column types/);
   assert.match(result.stdout, /indexes, unique constraints, primary keys, foreign keys, and one implicit relation table/);
-  assert.match(result.stdout, /six additive MySQL migrations/);
+  assert.match(result.stdout, /seven additive MySQL migrations/);
   assert.match(result.stdout, /101 TEXT expression defaults use the form MySQL 8 reports to Prisma/);
   assert.match(result.stdout, /no destructive SQL found/);
 });

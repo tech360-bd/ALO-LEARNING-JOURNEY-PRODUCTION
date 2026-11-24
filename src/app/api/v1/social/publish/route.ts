@@ -1,26 +1,10 @@
-/**
- * POST /api/v1/social/publish
- *
- * Publishes (or schedules) a content post via the Postiz adapter.
- * Body:
- *   { "contentId": "...", "platforms": ["facebook", "instagram"],
- *     "scheduledAt": "2026-11-06T10:00:00Z",  // optional
- *     "mediaUrls": [...] }
- *
- * Returns:
- *   - When Postiz is configured: real post IDs + simulated=false
- *   - When Postiz is NOT configured: simulated=true, post marked 'scheduled'
- *     locally only (NOT marked 'published' — that would falsely claim delivery)
- *
- * Per master directive: a successful post requires actual provider response +
- * external post ID + publication timestamp + stored evidence. This route
- * enforces that contract.
- */
+/** Manual and scheduled post dispatch share the same atomic content lease. */
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionContext, unauthorized, badRequest, notFound, ok } from '@/lib/v1-middleware';
-import { publishPost } from '@/lib/postiz-adapter';
+import { isPostizConfigured, publishPost } from '@/lib/postiz-adapter';
 import { emitEvent } from '@/lib/events';
+import { claimContentForPublish, finalizeClaim, markClaimSending, parsePublishMetadata } from '@/lib/social-publish-claims';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,87 +18,80 @@ export async function POST(request: NextRequest) {
     return badRequest('platforms array is required (e.g. ["facebook", "instagram"])');
   }
 
-  const content = await db.content.findFirst({
-    where: { id: body.contentId, companyId: ctx.companyId },
-  });
+  const content = await db.content.findFirst({ where: { id: body.contentId, companyId: ctx.companyId } });
   if (!content) return notFound('content not found');
 
-  // Call Postiz (or simulation when unconfigured)
+  if (!isPostizConfigured()) {
+    const simulated = await publishPost({ contentId: content.id, text: content.body || content.title, platforms: body.platforms });
+    await db.content.update({
+      where: { id: content.id },
+      data: { status: 'scheduled', scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : new Date() },
+    });
+    return ok({ contentId: content.id, status: 'scheduled', simulated: true, warning: simulated.error });
+  }
+
+  const claimed = await claimContentForPublish(db, content, new Date(), undefined, ['draft', 'scheduled']);
+  if (claimed.kind === 'unknown') {
+    return Response.json({ ok: false, error: 'publish_outcome_unknown', contentId: content.id, retryAllowed: false }, { status: 202 });
+  }
+  if (claimed.kind !== 'claimed') {
+    return Response.json({ ok: false, error: 'content_publish_busy', contentId: content.id }, { status: 409 });
+  }
+  const sending = await markClaimSending(db, claimed.claim);
+  if (!sending?.sendingEngagement) return Response.json({ ok: false, error: 'content_publish_busy', contentId: content.id }, { status: 409 });
+
   const result = await publishPost({
     contentId: content.id,
     text: content.body || content.title,
     platforms: body.platforms,
     scheduledAt: body.scheduledAt,
     mediaUrls: body.mediaUrls || [],
+    attemptKey: claimed.claim.attemptKey,
   });
+  const previous = parsePublishMetadata(sending.sendingEngagement);
+  const finishedAt = new Date();
 
-  // Update Content row based on outcome
-  if (result.simulated) {
-    // Mark as 'scheduled' locally — Postiz not configured, no real publish yet
-    await db.content.update({
-      where: { id: content.id },
-      data: {
-        status: 'scheduled',
-        scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : new Date(),
-      },
+  if (result.outcome === 'accepted' && result.postizPostId) {
+    const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
+    const isImmediate = !scheduledAt || scheduledAt.getTime() <= Date.now() + 60_000;
+    const evidence: Record<string, any> = {
+      ...previous, publishingState: 'published', postizPostId: result.postizPostId,
+      platformPostIds: result.platformPostIds || [], publishedVia: 'postiz', publishedAt: finishedAt.toISOString(),
+    };
+    delete evidence.retryCount;
+    delete evidence.lastError;
+    const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+      status: isImmediate ? 'published' : 'scheduled', scheduledAt,
+      publishedAt: isImmediate ? finishedAt : null, engagement: JSON.stringify(evidence),
+    }, finishedAt);
+    if (!saved) return Response.json({ ok: false, error: 'publish_lease_expired', contentId: content.id, retryAllowed: false }, { status: 202 });
+
+    await emitEvent({
+      type: 'social.post_published', companyId: ctx.companyId, userId: ctx.userId,
+      resource: 'content', resourceId: content.id,
+      metadata: { platforms: body.platforms, postizPostId: result.postizPostId, platformPostIds: result.platformPostIds, simulated: false },
     });
     return ok({
-      contentId: content.id,
-      status: 'scheduled',
-      simulated: true,
-      warning: result.error,
+      contentId: content.id, status: isImmediate ? 'published' : 'scheduled', simulated: false,
+      postizPostId: result.postizPostId, platformPostIds: result.platformPostIds,
+      publishedAt: isImmediate ? finishedAt.toISOString() : null, scheduledAt: scheduledAt?.toISOString() || null,
     });
   }
 
-  if (result.httpStatus !== 200) {
-    // Publish failed — keep status='draft' so user can retry
-    return Response.json(
-      { ok: false, error: 'publish_failed', message: result.error, httpStatus: result.httpStatus },
-      { status: 502 }
-    );
+  if (result.outcome === 'rejected') {
+    const retryCount = Number(previous.retryCount || 0) + 1;
+    const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+      engagement: JSON.stringify({ ...previous, publishingState: 'retryable', retryCount, lastError: result.error?.slice(0, 200) }),
+    }, finishedAt);
+    if (!saved) return Response.json({ ok: false, error: 'publish_lease_expired', contentId: content.id }, { status: 409 });
+    return Response.json({ ok: false, error: 'publish_failed', httpStatus: result.httpStatus }, { status: 502 });
   }
 
-  // Real publish succeeded — mark as 'published' (or 'scheduled' if scheduledAt is in the future)
-  const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : null;
-  const isImmediate = !scheduledAt || scheduledAt.getTime() <= Date.now() + 60_000;
-
-  await db.content.update({
-    where: { id: content.id },
-    data: {
-      status: isImmediate ? 'published' : 'scheduled',
-      scheduledAt,
-      publishedAt: isImmediate ? new Date() : null,
-      // Reuse the engagement JSON field to store platform post IDs (audit evidence)
-      engagement: JSON.stringify({
-        postizPostId: result.postizPostId,
-        platformPostIds: result.platformPostIds,
-        publishedVia: 'postiz',
-        publishedAt: new Date().toISOString(),
-      }),
-    },
-  });
-
-  await emitEvent({
-    type: 'social.post_published',
-    companyId: ctx.companyId,
-    userId: ctx.userId,
-    resource: 'content',
-    resourceId: content.id,
-    metadata: {
-      platforms: body.platforms,
-      postizPostId: result.postizPostId,
-      platformPostIds: result.platformPostIds,
-      simulated: false,
-    },
-  });
-
-  return ok({
-    contentId: content.id,
-    status: isImmediate ? 'published' : 'scheduled',
-    simulated: false,
-    postizPostId: result.postizPostId,
-    platformPostIds: result.platformPostIds,
-    publishedAt: isImmediate ? new Date().toISOString() : null,
-    scheduledAt: scheduledAt?.toISOString() || null,
-  });
+  const saved = await finalizeClaim(db, sending, sending.sendingEngagement, {
+    engagement: JSON.stringify({
+      ...previous, publishingState: 'unknown',
+      unknownReason: result.error?.slice(0, 200) || 'provider_outcome_not_confirmed', unknownAt: finishedAt.toISOString(),
+    }),
+  }, finishedAt);
+  return Response.json({ ok: false, error: 'publish_outcome_unknown', contentId: content.id, retryAllowed: false, saved }, { status: 202 });
 }
