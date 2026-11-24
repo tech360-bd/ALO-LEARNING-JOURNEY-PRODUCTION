@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
 import { db } from '@/lib/db';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function POST(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -12,19 +12,22 @@ export async function POST(req: NextRequest) {
     const message = String(body.message || '').trim();
     if (!message) return NextResponse.json({ error: 'message required' }, { status: 400 });
     let reply = '';
+    let usedFallback = false;
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const completion = await zai.chat.completions.create({
         messages: [{ role: 'system', content: 'You are an AI auto-reply assistant. Respond concisely (under 160 chars for SMS). Be helpful and professional.' }, { role: 'user', content: message }],
         thinking: { type: 'disabled' },
       });
-      reply = completion.choices[0]?.message?.content || '';
+      reply = completion.choices[0]?.message?.content?.trim() || '';
+      if (!reply) throw new Error('Empty reply');
     } catch {
+      usedFallback = true;
       const lower = message.toLowerCase();
       if (lower.includes('price') || lower.includes('cost')) reply = 'Hi! Our pricing depends on your needs. I\'ll have our team send you a quote. What\'s the best time to reach you?';
       else if (lower.includes('hello') || lower.includes('hi')) reply = 'Hello! Thanks for reaching out. How can I help you today?';
       else reply = 'Thanks for your message! I\'ll have our team get back to you within 24 hours.';
     }
-    return NextResponse.json({ data: { reply, incomingMessage: message } });
+    return NextResponse.json({ data: { reply, incomingMessage: message, usedFallback, provider: usedFallback ? 'rule-based' : 'z-ai-sdk', requiresReview: true } });
   } catch { return NextResponse.json({ error: 'Failed' }, { status: 500 }); }
 }

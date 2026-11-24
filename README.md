@@ -2,9 +2,13 @@
 
 This repository contains the existing ALO Learning Journey application and its release/deployment tooling. It is not a replacement application.
 
+Latest: [security containment and release-candidate verification](audit/RC-CONTAINMENT.md). The earlier report below is the baseline, not the current test or dependency count.
+
+See the [2026-11-24 working-tree audit](audit/2026-11-24-readiness.md) for the current findings, tests and blockers.
+
 ## Release status
 
-**Production deployment is not approved.** This repair has not accessed the VPS, production MySQL, or public domain. The `main` integration is committed and pushed to existing PR #19 on the fixed Arena branch. At last observation, candidate `2453def` had a clean merge state and passing `CI / validate`; the PR was open and unmerged. See the readiness report for scope and outstanding production blockers, and GitHub for any later PR status.
+**Production deployment is not approved.** This repair has not accessed the VPS, production MySQL, or public domain. The 24 November working-tree changes are uncommitted. Earlier PR and release reports are historical evidence, not verification of this candidate.
 
 The repository currently declares package version `0.2.1`. No `v2.0.0` tag or GitHub release has been verified. The current [`deploy/RELEASE_MANIFEST.txt`](./deploy/RELEASE_MANIFEST.txt) is a repository-only status record, not evidence that a release shipped; see it and the readiness report for current repository-only evidence.
 
@@ -53,13 +57,7 @@ replacing it:
   `Authorization: Bearer <token>` header is handled by MarketingOS, which verifies
   the JWT; every other request is handled by ALO. A method that only one app
   implements returns `405` with an `Allow` header (`src/lib/route-dispatch.ts`).
-- **Sign-in in production.** `src/middleware.ts` still protects every non-public
-  path with the ALO administrator session, so MarketingOS pages and APIs are only
-  reachable by a signed-in ALO administrator. The MarketingOS JWT endpoints
-  (`/api/auth/login`, `/api/auth/me`, `/api/auth/register`) sit under the public
-  `/api/auth/*` prefix; registration returns `403` in production unless
-  `MARKETINGOS_ALLOW_REGISTRATION=true`. Opening MarketingOS to non-ALO users needs
-  a reviewed middleware change.
+- **Sign-in in production.** `src/proxy.ts` requires the ALO administrator session for both MarketingOS pages. Allowlisted MarketingOS **API** routes accept a signed tenant JWT, independently of the admin cookie. Other ALO APIs do not. The `/api/auth/*` namespace is reachable for sign-in; registration is closed unless `MARKETINGOS_ALLOW_REGISTRATION=true`. Do not open the pages to additional identities without a separate access review.
 - **Database.** MarketingOS adds 99 tables to the same MySQL database through the
   additive migration `prisma/migrations/20261111000000_marketingos_workforce_tables`;
   no ALO table is altered. Eight models whose names collided with ALO models are
@@ -90,9 +88,12 @@ replacing it:
 Requirements: Node.js 22.x and npm. Use a disposable development database; never point development commands at production.
 
 ```bash
-npm ci
-# Configure a local/test-only DATABASE_URL and local auth settings.
-npm run db:generate
+# Provision an EMPTY local MySQL 8 database named alo_test for this checkout.
+# Set DATABASE_URL in your shell and private .env to that local database.
+# The guard reads the shell environment. Never reuse VPS settings.
+npm ci  # includes Prisma client generation; needs access to the Prisma engine CDN
+# On that fresh disposable DB ONLY; applies the existing migration chain:
+ALO_DEV_DB_CONFIRM=alo_test ALO_CONFIRM_MIGRATE_DEV=alo_test npm run db:migrate
 npm run dev
 ```
 

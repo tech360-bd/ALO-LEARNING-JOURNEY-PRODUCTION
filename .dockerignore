@@ -34,3 +34,19 @@ server.log
 # Docs don't need to ship
 ALO_HUMAN_AVATAR_PRODUCTION_RELEASE
 deploy/docs
+
+# Environment backups are credentials, not build inputs.
+.env.*
+!.env.example
+.cache
+
+# Include nested service trees and editor/backup variants.
+**/.env
+**/.env.*
+**/.env~*
+**/.env-*
+**/.env_*
+**/.envrc
+!.env.example
+**/*.pem
+**/*.key

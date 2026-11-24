@@ -16,7 +16,8 @@ export function LoginView() {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [loginForm, setLoginForm] = useState({ email: 'admin@marketingos.com', password: '' });
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '', code: '' });
   const [registerForm, setRegisterForm] = useState({ email: '', password: '', name: '', companyName: '', industry: '', country: '' });
 
   const handleLogin = async () => {
@@ -29,6 +30,7 @@ export function LoginView() {
         body: JSON.stringify(loginForm),
       });
       const data = await res.json();
+      if (data.mfaRequired) setMfaRequired(true);
       if (!res.ok) throw new Error(data.error);
       localStorage.setItem('mos_token', data.token);
       setUser(data.user);
@@ -107,7 +109,7 @@ export function LoginView() {
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
                       type="email"
-                      placeholder="admin@marketingos.com"
+                      placeholder="you@company.com"
                       value={loginForm.email}
                       onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
                       className="pl-10"
@@ -129,13 +131,17 @@ export function LoginView() {
                     />
                   </div>
                 </div>
-                {error && <p className="text-destructive text-sm">{error}</p>}
+                {mfaRequired && <div className="space-y-2">
+                  <Label htmlFor="mos-login-code">Authenticator code</Label>
+                  <Input id="mos-login-code" autoFocus autoComplete="one-time-code" inputMode="numeric" maxLength={6}
+                    value={loginForm.code} onChange={e => setLoginForm({ ...loginForm, code: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && !loading && handleLogin()} />
+                </div>}
+                {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
                 <Button className="w-full bg-gradient-to-r from-primary to-chart-2 hover:opacity-90" onClick={handleLogin} disabled={loading}>
                   {loading ? 'Signing in...' : 'Sign In'}
                 </Button>
-                <p className="text-xs text-center text-muted-foreground">
-                  Demo: admin@marketingos.com / admin123
-                </p>
+
               </CardContent>
             </TabsContent>
 
@@ -182,7 +188,7 @@ export function LoginView() {
                     </div>
                   </div>
                 </div>
-                {error && <p className="text-destructive text-sm">{error}</p>}
+                {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
                 <Button className="w-full bg-gradient-to-r from-primary to-chart-2 hover:opacity-90" onClick={handleRegister} disabled={loading}>
                   {loading ? 'Creating account...' : 'Create Account'}
                 </Button>

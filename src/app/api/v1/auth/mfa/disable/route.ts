@@ -12,11 +12,12 @@
  * On success: the MfaSecret row is deleted (or marked disabled). Future
  * logins will not prompt for a TOTP code.
  */
+import { rateLimiter } from '@/lib/security';
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionContext, unauthorized, badRequest, ok, notFound } from '@/lib/v1-middleware';
 import { decryptSecret } from '@/lib/vault';
-import { verifyTotp } from '@/lib/totp';
+import { enrollmentSecret, matchingTotpStep } from '@/lib/totp';
 import { emitEvent } from '@/lib/events';
 
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,8 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   const ctx = await getSessionContext(request);
   if (!('authenticated' in ctx && ctx.authenticated)) return unauthorized();
+  const limit = rateLimiter(`mos-mfa-disable:${ctx.userId}`, { maxRequests: 5 });
+  if (!limit.allowed) return Response.json({ error: 'Too many attempts' }, { status: 429, headers: { 'Retry-After': String(Math.ceil(limit.retryAfterMs / 1000)) } });
 
   const body = await request.json().catch(() => null);
   if (!body || !body.code) return badRequest('code is required');
@@ -37,18 +40,19 @@ export async function POST(request: NextRequest) {
 
   let secret: string;
   try {
-    secret = decryptSecret(mfa.secretCipher);
-  } catch (e) {
-    console.error('[mfa/disable] decrypt failed:', e);
+    secret = enrollmentSecret(decryptSecret(mfa.secretCipher));
+  } catch {
+    console.error('[mfa/disable] enrollment decryption unavailable');
     return badRequest('secret corrupted');
   }
 
-  if (!verifyTotp(secret, code)) {
+  const step = matchingTotpStep(secret, code);
+  if (step === null) {
     return badRequest('invalid_code', 'TOTP code did not match');
   }
 
-  await db.mfaSecret.update({
-    where: { userId: ctx.userId },
+  const updated = await db.mfaSecret.updateMany({
+    where: { userId: ctx.userId, isEnabled: true, secretCipher: mfa.secretCipher, OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: new Date(step * 1000) } }] },
     data: {
       isEnabled: false,
       enabledAt: null,
@@ -56,6 +60,7 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  if (!updated.count) return badRequest('Enrollment changed; reload before retrying.');
   await emitEvent({
     type: 'mfa.disabled',
     companyId: ctx.companyId,

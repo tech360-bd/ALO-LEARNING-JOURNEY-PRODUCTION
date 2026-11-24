@@ -218,7 +218,12 @@ function resolveLocalImage(publicPath: string): string | null {
   const resolved = path.join(PUBLIC_DIR, match[1], `${match[2]}.${match[3]}`);
   const relative = path.relative(PUBLIC_DIR, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  return fsSync.existsSync(resolved) ? resolved : null;
+  try {
+    // The allowed leaf and its parent must not redirect reads through symlinks.
+    const physical = fsSync.realpathSync(resolved);
+    const expected = path.join(fsSync.realpathSync(PUBLIC_DIR), relative);
+    return physical === expected && fsSync.statSync(physical).isFile() ? physical : null;
+  } catch { return null; }
 }
 
 type ImageFormat = "jpeg" | "png" | "webp" | "gif" | "avif" | "heic";
@@ -428,8 +433,8 @@ export async function POST(request: Request) {
     }
 
     const outputSize = resolveOutputSize(aspectPreset, qualityPreset);
-    await mkdir(workDir, { recursive: true });
-    await mkdir(VIDEO_DIR, { recursive: true });
+    await mkdir(workDir, { recursive: true, mode: 0o700 });
+    await mkdir(VIDEO_DIR, { recursive: true, mode: 0o700 });
 
     /* ---------- 1. Save + normalise photos ---------- */
     const sources: PreparedSource[] = [];
@@ -861,22 +866,24 @@ export async function POST(request: Request) {
       // Database unavailable — the on-disk manifest is the source of truth.
     }
 
-    await rm(workDir, { recursive: true, force: true }).catch(() => {});
 
     return NextResponse.json({ ...result, owner: ownerId, engineGuard: engineCheck });
   } catch (error) {
-    await rm(workDir, { recursive: true, force: true }).catch(() => {});
-    const message = error instanceof Error ? error.message : String(error);
+    // Only remove outputs owned by this fresh server-generated job ID.
+    await Promise.all(['srt', 'mp4', 'jpg', 'json'].map(ext => rm(path.join(VIDEO_DIR, `${id}.${ext}`), { force: true }).catch(() => {})));
     return NextResponse.json(
       {
         ok: false,
         error: "photo_video_render_failed",
-        detail: message.slice(0, 900),
+        detail: "Local render did not complete",
         hint:
           "The renderer needs ffmpeg/ffprobe on the server. Run `node scripts/verify-media-pipeline.mjs` to check the media toolchain.",
         policy: FREE_PIPELINE_POLICY,
       },
       { status: 500 }
     );
+  } finally {
+    // Validation can return after earlier photos were written to disk.
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
 }

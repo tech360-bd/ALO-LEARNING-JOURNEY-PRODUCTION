@@ -148,9 +148,9 @@ export async function verifyMarketingOsBearer(
   if (!secret) return null;
 
   try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret), { algorithms: ["HS256"], maxTokenAge: "7d", requiredClaims: ["sid", "iat", "exp", "userId"] });
     const userId = typeof payload.userId === "string" ? payload.userId : "";
-    if (!userId) return null;
+    if (!userId || typeof payload.sid !== "string" || !payload.sid) return null;
     return {
       userId,
       companyId: typeof payload.companyId === "string" ? payload.companyId : undefined,

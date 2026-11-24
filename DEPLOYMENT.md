@@ -11,19 +11,15 @@
 
 ## Evidence and scope
 
-- Current repository-only status: [`deploy/docs/PRODUCTION_READINESS.md`](./deploy/docs/PRODUCTION_READINESS.md) and [`deploy/docs/TEST_REPORT.md`](./deploy/docs/TEST_REPORT.md).
+- Current working-tree review: [audit/2026-11-24-readiness.md](audit/2026-11-24-readiness.md).
+- Earlier repository-only status: [`deploy/docs/PRODUCTION_READINESS.md`](./deploy/docs/PRODUCTION_READINESS.md) and [`deploy/docs/TEST_REPORT.md`](./deploy/docs/TEST_REPORT.md).
 - Release evidence and known blockers: [`deploy/RELEASE_MANIFEST.txt`](./deploy/RELEASE_MANIFEST.txt).
 - `COMPLETE-AUDIT-REPORT.md` and `POST-REPAIR-AUDIT-REPORT.md` are explicitly labeled historical snapshots; their counts and check results are not current.
 - Migration recovery requirements: [`MIGRATION-RECOVERY-PLAN.md`](./MIGRATION-RECOVERY-PLAN.md).
 - Reports under `audit/` and `worklog.md` are historical archives, not proof that the current VPS, database, or network is healthy.
 
 No production migration, database write, PM2 command, proxy change, DNS/SSL
-change, SSH operation, PR merge, or deployment has been performed. The main
-branch integration is committed and pushed to existing PR #19 on the fixed
-Arena branch. At last observation, candidate `2453def` had a clean merge state
-and passing CI; the PR was open and unmerged. Production remains blocked by the
-database, backup, dependency, and host-verification gates below. Check GitHub for
-any later PR state.
+change, SSH operation, PR merge, or deployment has been performed. No PR was opened or changed for this working-tree review.
 
 ## Deployment workflow and safety gates
 

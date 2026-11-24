@@ -30,7 +30,7 @@ interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, code?: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -69,8 +69,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await api.post<LoginResponse>("/api/auth/login", { email, password });
+    async (email: string, password: string, code?: string) => {
+      const res = await api.post<LoginResponse>("/api/auth/login", { email, password, code });
       applyAuth(res);
     },
     [applyAuth]
@@ -84,7 +84,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applyAuth]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    const token = localStorage.getItem('mos_token');
+    if (token) await fetch('/api/settings/sessions/current', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) }).catch(() => {});
     clearToken();
     localStorage.removeItem(STORAGE_USER_KEY);
     setUser(null);

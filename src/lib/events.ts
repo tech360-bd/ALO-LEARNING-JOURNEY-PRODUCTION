@@ -1,3 +1,4 @@
+import { publicHttp } from './public-http';
 /**
  * Event bus — central place to fire notifications, audit logs, activities, and webhooks.
  *
@@ -173,31 +174,13 @@ async function fireWebhooksForCompany(
           ? await hmacSha256(webhook.secret, JSON.stringify(payload))
           : null;
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10000);
-
-        const res = await fetch(webhook.url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-MarketingOS-Event': eventType,
-            'X-MarketingOS-Signature': signature || '',
-          },
+        const res = await publicHttp(webhook.url, {
+          headers: { 'Content-Type': 'application/json', 'X-MarketingOS-Event': eventType, 'X-MarketingOS-Signature': signature || '' },
           body: JSON.stringify(payload),
-          signal: controller.signal,
         });
-
-        clearTimeout(timeout);
-        if (!res.ok) {
-          console.warn(
-            `[webhook] ${webhook.url} returned HTTP ${res.status} for event ${eventType}`,
-          );
-        }
-      } catch (err) {
-        console.warn(
-          `[webhook] failed to deliver ${eventType} to ${webhook.url}:`,
-          err instanceof Error ? err.message : err,
-        );
+        if (res.status < 200 || res.status >= 300) console.warn('[webhook] delivery declined:', res.status);
+      } catch {
+        console.warn('[webhook] delivery blocked or failed');
       }
     }),
   );

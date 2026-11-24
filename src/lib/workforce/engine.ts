@@ -5,7 +5,7 @@
 
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 
 // ============================================================================
 // TYPES
@@ -1287,7 +1287,7 @@ export async function classifyComplexity(
   description: string
 ): Promise<string> {
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const response = await zai.chat.completions.create({
       messages: [
         {
@@ -1442,7 +1442,7 @@ export async function routeTask(
     // 8. Execute via LLM
     const userMessage = `Please complete the following task:\n\n**Task:** ${task.title}\n**Description:** ${task.description}\n**Type:** ${task.type}\n**Complexity:** ${complexity}\n\nProvide a thorough, professional response based on your expertise and the provided context.`;
 
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const completion = await zai.chat.completions.create({
       messages: [
         { role: 'system', content: fullSystemPrompt },
@@ -1656,7 +1656,7 @@ export async function executeWithEmployee(
     const modelName = employee.preferredModel || modelConfig?.name || 'default';
 
     // 8. Execute via LLM
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const completion = await zai.chat.completions.create({
       messages,
       thinking: { type: 'disabled' },

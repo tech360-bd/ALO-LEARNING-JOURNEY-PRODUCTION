@@ -5,12 +5,14 @@
 // 4. Confirm the user row exists in the DB with the expected email.
 // Exits 0 on success, 1 on any failure.
 
+import { requireTestDatabase } from './require-test-database.mjs';
 import { PrismaClient } from '@prisma/client';
-import { hashPassword, verifyPassword, createToken, verifyToken } from '../src/lib/auth';
+import { hashPassword, verifyPassword, issueSessionToken, verifyToken } from '../src/lib/auth';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  requireTestDatabase();
   const email = process.env.ADMIN_SEED_EMAIL!;
   const password = process.env.ADMIN_SEED_PASSWORD!;
 
@@ -24,12 +26,13 @@ async function main() {
   console.log('     -> password verified (bcrypt rounds OK)');
 
   console.log('[3/4] Issue JWT and round-trip verify');
-  const token = await createToken({
+  const membership = await prisma.companyUser.findFirstOrThrow({ where: { userId: user.id } });
+  const token = await issueSessionToken(prisma, {
     userId: user.id,
     email: user.email,
-    role: 'super_admin',
-    companyId: '',
-  });
+    role: membership.role,
+    companyId: membership.companyId,
+  }, 'disposable login verification');
   if (!token || token.split('.').length !== 3) throw new Error('FAIL: malformed JWT');
   const payload = await verifyToken(token);
   if (!payload || payload.email !== email) throw new Error('FAIL: verifyToken returned invalid payload');

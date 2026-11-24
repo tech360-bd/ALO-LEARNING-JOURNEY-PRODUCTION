@@ -13,7 +13,7 @@
  */
 import { db } from './db';
 import { emitEvent } from './events';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 import type { QualityAgentPass } from './ai';
 
 export interface AgentRunInput {
@@ -202,7 +202,7 @@ export async function runAgent(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const completion = await zai.chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -210,7 +210,8 @@ export async function runAgent(
         ],
         thinking: { type: 'disabled' },
       });
-      output = completion.choices[0]?.message?.content || '(no output)';
+      output = completion.choices[0]?.message?.content?.trim() || '';
+      if (!output) throw new Error('Empty model response');
       if (completion.usage) {
         promptTokens = completion.usage.prompt_tokens;
         completionTokens = completion.usage.completion_tokens;
@@ -227,13 +228,13 @@ export async function runAgent(
       // If all retries failed OR it's a non-429 error, try deterministic fallback
       const fallback = generateDeterministicFallback(agent.type, input);
       if (fallback) {
-        output = fallback;
+        output = `Rule-based draft (not model-generated):\n${fallback}`;
         modelUsed = 'rule-based-fallback';
         usedFallback = true;
-        errorMsg = undefined; // fallback succeeded — not a failure
+        errorMsg = 'Model unavailable; a rule-based draft requires human review.';
       } else {
-        errorMsg = msg;
-        output = `Agent failed after ${maxRetries} attempts: ${msg}`;
+        errorMsg = 'Model request failed.';
+        output = errorMsg;
       }
       break;
     }
@@ -253,10 +254,10 @@ export async function runAgent(
       completionTokens: completionTokens || 0,
       latencyMs: durationMs,
       completedAt: new Date(),
-      validationStatus: errorMsg ? 'failed' : 'passed',
-      validationScore: errorMsg ? 0 : (usedFallback ? 0.7 : 1),
+      validationStatus: errorMsg ? 'failed' : 'skipped',
+      validationScore: null, // Non-empty output is not an independent quality score.
       qualityNotes: usedFallback
-        ? 'LLM rate-limited — used rule-based fallback'
+        ? 'Model unavailable — rule-based draft only'
         : errorMsg || 'LLM call succeeded',
     },
   });
@@ -267,7 +268,7 @@ export async function runAgent(
     data: {
       config: JSON.stringify({
         ...parseConfig(agent.config),
-        tasksCompleted: (parseConfig(agent.config).tasksCompleted || 0) + 1,
+        tasksCompleted: (parseConfig(agent.config).tasksCompleted || 0) + (errorMsg ? 0 : 1),
         lastRunAt: new Date().toISOString(),
         lastRunStatus: errorMsg ? 'failed' : 'success',
       }),

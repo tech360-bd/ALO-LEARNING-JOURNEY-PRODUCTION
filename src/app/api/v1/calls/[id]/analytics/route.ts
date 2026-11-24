@@ -8,7 +8,7 @@
  * Body: { "regenerate": false }   // optional — set true to force regeneration
  */
 import { NextRequest } from 'next/server';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 import { db } from '@/lib/db';
 import { getSessionContext, unauthorized, ok, notFound, badRequest } from '@/lib/v1-middleware';
 import { emitEvent } from '@/lib/events';
@@ -84,7 +84,7 @@ function serialize(a: any) {
 }
 
 async function generateAnalytics(call: any) {
-  const zai = await ZAI.create();
+  const zai = await createApprovedZai();
   const prompt = `Analyze this call transcript and respond as JSON ONLY with these keys:
 - overallSentiment: "positive" | "neutral" | "negative" | "mixed"
 - sentimentScore: number between -1 and 1

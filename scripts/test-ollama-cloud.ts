@@ -13,6 +13,7 @@
  *
  * Run: npx tsx scripts/test-ollama-cloud.ts
  */
+import { requireTestDatabase } from './require-test-database.mjs';
 import { PrismaClient } from '@prisma/client';
 import { scrubPii, isLocalProvider } from '../src/lib/pii-filter';
 import {
@@ -33,6 +34,8 @@ function assert(cond: boolean, label: string) {
 }
 
 async function main() {
+  requireTestDatabase();
+  if (process.env.ALO_APPROVED_PROVIDER_SANDBOX_TEST !== 'true') throw new Error('Blocked: provider sandbox verification requires explicit operator approval');
   // Ensure tools are registered
   await import('../src/lib/agent-tools');
 

@@ -17,7 +17,7 @@
  * pass the BANGLA_VOICE_MODEL_EVALUATION.md plan before production use.
  */
 import { db } from './db';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 
 export interface AsrInput {
   audioUrl?: string; // URL to fetch audio from
@@ -144,7 +144,7 @@ export async function transcribe(input: AsrInput): Promise<AsrResult> {
 
   // 4. Z.AI cloud ASR (already integrated)
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     if (input.audioBase64) {
       const r: any = await zai.audio.asr.create({
         audio: input.audioBase64 as any,

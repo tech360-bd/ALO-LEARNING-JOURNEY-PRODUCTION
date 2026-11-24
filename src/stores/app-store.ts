@@ -80,6 +80,8 @@ export const useAppStore = create<AppState>((set) => ({
   }),
   logout: () => {
     if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('mos_token');
+      if (token) void fetch('/api/settings/sessions/current', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }, keepalive: true }).catch(() => {});
       localStorage.removeItem('mos_token');
     }
     set({ user: null, isAuthenticated: false, isLoading: false, activeView: 'dashboard', currentCompany: null });

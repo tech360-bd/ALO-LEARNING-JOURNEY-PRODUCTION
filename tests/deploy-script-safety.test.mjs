@@ -109,3 +109,7 @@ test("third-party Datadog tests are disabled by default and require an explicit 
   assert.match(datadogWorkflow, /secrets\.DD_APP_KEY/);
   assert.match(datadogWorkflow, /required repository secrets are missing/);
 });
+
+test('manual deployment is restricted to main as well as the environment gate', () => {
+  assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && vars\.VPS_DEPLOY_ENABLED == 'true'/);
+});

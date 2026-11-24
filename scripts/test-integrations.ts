@@ -12,6 +12,7 @@
 //   8. Integration upsert with companyId+provider uniqueness
 //   9. Free-model AI chain falls through to rule-based when no providers configured
 //  10. Integration Setup Agent greets in Bengali by default
+import { requireTestDatabase } from './require-test-database.mjs';
 import { encryptSecret, decryptSecret, maskSecret } from '../src/lib/vault';
 import { generateCodeVerifier, computeCodeChallenge, generateStateToken, validateStateToken } from '../src/lib/pkce';
 import { getProvider, listProviders, resolveOAuthClientId } from '../src/lib/providers';
@@ -30,6 +31,7 @@ function assert(cond: boolean, label: string) {
 }
 
 async function main() {
+  requireTestDatabase();
   console.log('\n[1/10] AES-256-GCM vault roundtrip');
   const plaintext = 'sk_live_abcdef1234567890';
   const enc = encryptSecret(plaintext);

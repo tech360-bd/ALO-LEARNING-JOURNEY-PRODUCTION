@@ -21,6 +21,7 @@
  *
  * Run: npx tsx scripts/test-voice-contact-center.ts
  */
+import { requireTestDatabase } from './require-test-database.mjs';
 import { PrismaClient } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
 
@@ -32,6 +33,7 @@ function assert(cond: boolean, label: string) {
 }
 
 async function main() {
+  requireTestDatabase();
   console.log('\n[1/14] Phase 1 — schema migration verification');
   // Try to query each new model — if the table doesn't exist, Prisma throws
   for (const model of ['mfaSecret', 'refreshToken', 'voiceAgent', 'consent', 'callUsageDaily', 'ttsUsageDaily', 'asrUsageDaily']) {

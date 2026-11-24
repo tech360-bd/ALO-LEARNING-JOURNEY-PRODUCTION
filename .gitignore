@@ -98,3 +98,19 @@ __pycache__/
 *.py[cod]
 .env.config
 .env.bak*
+
+# Environment backups are credentials, not build inputs.
+.env.*
+!.env.example
+
+# Disposable verification tools (never part of the application)
+/.cache/
+
+# Include nested service trees and editor/backup variants.
+**/.env
+**/.env.*
+**/.env~*
+**/.env-*
+**/.env_*
+**/.envrc
+!/.env.example

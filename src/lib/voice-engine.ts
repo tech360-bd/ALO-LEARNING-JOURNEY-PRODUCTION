@@ -21,7 +21,7 @@
 import { db } from './db';
 import { encryptSecret, maskSecret } from './vault';
 import { emitEvent } from './events';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 
 export interface TtsInput {
   text: string;
@@ -106,7 +106,7 @@ export async function synthesize(input: TtsInput): Promise<TtsResult> {
 
   // Fallback: Z.AI cloud TTS (already integrated in ai-extensions.ts)
   try {
-    const zai = await ZAI.create();
+    const zai = await createApprovedZai();
     const r: any = await zai.audio.tts.create({
       input: text,
       voice: input.voiceId || 'default',

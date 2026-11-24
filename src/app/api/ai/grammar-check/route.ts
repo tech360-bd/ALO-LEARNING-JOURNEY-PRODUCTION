@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/auth';
-import ZAI from 'z-ai-web-dev-sdk';
+import { createApprovedZai } from '@/lib/approved-zai';
 export async function POST(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     const text = String(body.text || '').trim();
     if (!text) return NextResponse.json({ error: 'text required' }, { status: 400 });
     try {
-      const zai = await ZAI.create();
+      const zai = await createApprovedZai();
       const completion = await zai.chat.completions.create({
         messages: [{ role: 'system', content: 'Check grammar. Return JSON: {"errors":[],"correctedText":""}' }, { role: 'user', content: text }],
         thinking: { type: 'disabled' },

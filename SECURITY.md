@@ -92,3 +92,11 @@ Production security headers, HTTPS certificate state, reverse proxy, firewall,
 PM2 configuration, Docker, monitoring/alerts, system logs, DB grants, and
 storage permissions all require a read-only live infrastructure inspection
 and authorized runtime verification. None is certified by this file.
+
+## Credential-backup incident (2026-11-24 working-tree audit)
+
+A populated `.env.save` was present in Git at `91948c6`. **A deletion in a later tree is not revocation.** Do not inspect or paste values into tickets, workflow logs, or PR descriptions. Treat the database credential, admin password verifier, NextAuth/JWT and cron signing material, SMS provider credential, and backup/vault keys as compromised unless independently proven unrelated to any deployment.
+
+Before release, an operator must inventory affected environments, rotate credentials at their issuers, change the administrator password, invalidate active sessions, and review account grants, audit logs, SMS usage and database access. Rotate the vault and backup keys under a separate recovery plan: inventory envelopes, preserve restricted access to old encrypted backups, re-encrypt and rehearse a restore before retiring old keys. Do not just overwrite a decryption key. Review Git history, forks, CI/build caches, prior deployment bundles, and the published artifacts. Coordinate any history rewrite with repository owners; none was performed here.
+
+MarketingOS login, registration and refresh now issue session-bound JWTs using the existing UserSession table. New access tokens require a live device session, active account, and matching tenant role when verified by the route. Cutover intentionally rejects old access JWTs without a session ID; sign in again. Rotate `JWT_SECRET` and separately revoke outstanding refresh credentials at rollout in this incident. ALO's independent admin cookie still uses NextAuth. TOTP enrollment QR images are rendered locally. Re-enroll previously exposed QR seeds; storage encoding compatibility is not a substitute for replacing disclosed keys.

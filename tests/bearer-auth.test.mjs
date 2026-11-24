@@ -14,7 +14,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SECRET = "test-only-jwt-secret-for-bearer-auth-unit-tests";
 
 async function sign(claims, secret = SECRET, expiresIn = "1h") {
-  return new SignJWT(claims)
+  return new SignJWT({ sid: "disposable-session", ...claims })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(expiresIn)
@@ -73,6 +73,11 @@ test("forged, expired, unsigned, or unknown-secret tokens are rejected", async (
     assert.equal(await verifyMarketingOsBearer("Bearer anything"), null);
     assert.equal(await verifyMarketingOsBearer(null), null);
   });
+});
+
+test("old sessionless tokens must reauthenticate", async () => {
+  const token = await sign({ userId: "user_1", sid: undefined });
+  assert.equal(await withSecret(SECRET, () => verifyMarketingOsBearer(`Bearer ${token}`)), null);
 });
 
 test("a token without a userId claim is not an authenticated subject", async () => {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sendContactNotification, isEmailConfigured, emailDiagnostics } from "@/lib/email";
+import { sendContactNotification, isEmailConfigured } from "@/lib/email";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "rate_limited", message: "Too many requests — try again in a minute." }, { status: 429 });
   }
 
-  const body = await request.json().catch(() => ({}));
+  const body = (await request.json().catch(() => null)) ?? {};
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : "";
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase().slice(0, 254) : "";
   const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 40) : "";
@@ -56,54 +56,23 @@ export async function POST(request: NextRequest) {
     // audit failure shouldn't block contact
   }
 
-  // Attempt email delivery via cPanel SMTP
-  if (!isEmailConfigured()) {
-    const diag = emailDiagnostics();
-    // Store lead as fallback even if mail not configured
-    try {
-      await db.marketingLead.create({
-        data: {
-          name,
-          email,
-          phone: phone || null,
-          source: "website-contact",
-          service: topic || null,
-          notes: message,
-          status: "new",
-        },
-      });
-    } catch {}
-    return NextResponse.json(
-      {
-        ok: true,
-        delivered: false,
-        warning: "Contact saved — email delivery is not yet configured (SMTP_PASS missing).",
-        missing: diag.missing,
-        // keep public error low-detail; full diagnostics via /api/email/test (admin)
-      },
-      { status: 202 }
-    );
-  }
-
+  // Count the enquiry as received only if a real destination accepted it.
+  let saved = false;
   try {
-    const result = await sendContactNotification({ name, email, phone, message, topic });
-    // also save as lead for CRM
+    await db.marketingLead.create({ data: {
+      name, email, phone: phone || null, source: 'website-contact', service: topic || null, notes: message, status: 'new',
+    } });
+    saved = true;
+  } catch { console.warn('[contact] CRM storage unavailable'); }
+
+  if (isEmailConfigured()) {
     try {
-      await db.marketingLead.create({
-        data: { name, email, phone: phone || null, source: "website-contact", service: topic || null, notes: message, status: "new" },
-      });
-    } catch {}
-    return NextResponse.json({ ok: true, delivered: true, messageId: result.messageId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    // Still save lead so enquiry not lost
-    try {
-      await db.marketingLead.create({
-        data: { name, email, phone: phone || null, source: "website-contact", service: topic || null, notes: message, status: "new" },
-      });
-    } catch {}
-    return NextResponse.json({ ok: true, delivered: false, warning: "Enquiry saved but email delivery failed", error: msg.slice(0, 600) }, { status: 202 });
+      const result = await sendContactNotification({ name, email, phone, message, topic });
+      return NextResponse.json({ ok: true, saved, delivered: true, messageId: result.messageId });
+    } catch { console.warn('[contact] SMTP delivery unavailable'); }
   }
+  if (saved) return NextResponse.json({ ok: true, saved, delivered: false, warning: 'Enquiry saved. Email notification is unavailable.' }, { status: 202 });
+  return NextResponse.json({ ok: false, saved, delivered: false, error: 'contact_unavailable', message: 'Your enquiry was not received. Please retry or use the direct contact details.' }, { status: 503 });
 }
 
 // GET for diagnostics (public low-detail)

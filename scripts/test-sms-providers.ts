@@ -50,13 +50,16 @@ async function main() {
   assert(status[0].fromNumber === '+15550000000', 'twilio from-number is exposed');
   assert(status[1].configured === false, 'httpsms not configured');
 
-  console.log('\n[3/8] Twilio real call — auth failure (test credentials)');
+  console.log('\n[3/8] Twilio adapter — mocked auth failure (no network)');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ message: 'Unauthorized' }, { status: 401 });
+  try {
   result = await sendSmsViaProvider({ to: '+15551234567', body: 'test', companyId: 'test' });
-  // Twilio will return HTTP 401 with test creds — this is the EXPECTED behaviour
+  } finally { globalThis.fetch = originalFetch; }
   assert(result.providerName === 'twilio', 'twilio was attempted');
-  assert(result.simulated === false, 'not simulated (real call made)');
+  assert(result.simulated === false, 'adapter processed the mocked provider response');
   assert(result.status === 'failed', 'failed (test creds should 401)');
-  assert(result.providerHttpStatus === 401 || result.providerHttpStatus === 403, `HTTP 401/403 from Twilio (got ${result.providerHttpStatus})`);
+  assert(result.providerHttpStatus === 401 || result.providerHttpStatus === 403, `HTTP 401/403 from mock (got ${result.providerHttpStatus})`);
   delete process.env.TWILIO_ACCOUNT_SID;
   delete process.env.TWILIO_AUTH_TOKEN;
   delete process.env.TWILIO_FROM_NUMBER;
