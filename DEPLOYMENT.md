@@ -4,8 +4,8 @@
 > This repository-only repair has not accessed the VPS, production database,
 > GitHub Actions settings, proxy, DNS, SSL, Docker, or PM2. Operator-provided
 > configuration (not independently verified): MySQL `db_learn` at
-> `127.0.0.1:3306`; app root `/home/aloedu/LEARNING-JOURNEY`; PM2 name
-> `learn-aloeducation`; port `3017`; domain `learn.aloeducation.com`. The operator
+> `127.0.0.1:3306`; app root `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`; PM2 name
+> `learn-aloeducation`; port `3061`; domain `learn.alolabs.net`. The operator
 > reports an empty PM2 process list. Scripts assert these exact values but do
 > not prove the VPS currently matches them.
 
@@ -32,11 +32,11 @@ switch is forwarded; this is an accidental-invocation guard, not proof that
 production is ready or authorization to bypass the workflow gates. Before the
 remote deploy step it must also receive:
 
-1. `VPS_APP_DIR` must equal `/home/aloedu/LEARNING-JOURNEY`; the workflow and
+1. `VPS_APP_DIR` must equal `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`; the workflow and
    remote script reject any other path. The deployment layout (`current`,
    `releases`, `shared/.env`) still requires read-only VPS verification.
-2. `VPS_PM2_APP=learn-aloeducation`, `VPS_APP_PORT=3017`, and
-   `VPS_DOMAIN=https://learn.aloeducation.com` must match exactly.
+2. `VPS_PM2_APP=learn-aloeducation`, `VPS_APP_PORT=3061`, and
+   `DEPLOY_URL=http://learn.alolabs.net`, and `HEALTH_PATH=/api/health` must match exactly.
 3. The deploy script requires an already-online PM2 process and a healthy,
    SHA-marked `current` release. It never starts a missing process. The
    operator-reported empty PM2 list therefore blocks this release path until a
@@ -73,10 +73,11 @@ or that production is ready.
 
 | Variable | Requirement |
 |---|---|
-| `VPS_APP_DIR` | Must equal `/home/aloedu/LEARNING-JOURNEY`. The on-disk release layout still needs read-only verification. |
+| `VPS_APP_DIR` | Must equal `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`. The on-disk release layout still needs read-only verification. |
 | `VPS_PM2_APP` | Must equal `learn-aloeducation`. |
-| `VPS_APP_PORT` | Must equal `3017`. |
-| `VPS_DOMAIN` | Must equal `https://learn.aloeducation.com`; public health must report the exact release SHA. |
+| `VPS_APP_PORT` | Must equal `3061`. |
+| `DEPLOY_URL` | Must equal `http://learn.alolabs.net`. The workflow probes the same hostname over HTTPS before deployment and checks its exact release SHA afterwards. |
+| `HEALTH_PATH` | Must equal `/api/health` for local and public probes. |
 | `VPS_RESTORE_TEST_SHA` | Exact release SHA whose production backup restore was rehearsed in isolation. |
 | `VPS_RESTORE_TEST_REFERENCE` | Non-secret audit/ticket reference for that restore rehearsal. |
 | `VPS_SCHEMA_PREFLIGHT_SHA` | Exact release SHA reviewed against production migration history and MySQL schema. |
@@ -189,3 +190,9 @@ reviewed and authorized before this release/rollback deploy path can run.
 
 **Until every blocker is resolved with evidence, leave `VPS_DEPLOY_ENABLED`
 unset and do not execute production migration/bootstrap/deploy commands.**
+
+### Workflow endpoints and versions
+
+CI reads the exact Node.js runtime from `.node-version` and records the package version and candidate SHA. The deploy workflow verifies the public origin `https://learn.alolabs.net` (HTTPS port 443); `3061` is the internal PM2 app port, not an SSH or public HTTPS port. `VPS_PORT` is the private SSH port (default `22`); both SSH jobs pin the supplied host key for that port. MySQL port `3306` in CI belongs only to the disposable service. Package versions come from `package.json`; only the full commit SHA identifies a deployment.
+
+If separately approved, configure `ALO_DATADOG_TEST_IDS` with the public IDs of the ALO synthetic tests and configure those tests to use `{{START_URL}}`. The optional workflow supplies the public HTTPS origin; it does not configure tests inside Datadog. No Docker publication or legacy deploy workflow is active.

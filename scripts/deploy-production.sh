@@ -9,19 +9,21 @@ log()  { printf '[deploy] %s\n' "$*"; }
 fail() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ "${VPS_DEPLOY_ENABLED:-}" == "true" ]] || fail "VPS_DEPLOY_ENABLED must be exactly true; production deployment is disabled"
-APP_DIR="${APP_DIR:-/home/aloedu/LEARNING-JOURNEY}"
-[ "$APP_DIR" = "/home/aloedu/LEARNING-JOURNEY" ] || fail "APP_DIR must equal the operator-verified /home/aloedu/LEARNING-JOURNEY path"
+APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
+[ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must equal the operator-verified /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION path"
 [ -d "$APP_DIR" ] || fail "verified APP_DIR does not exist; no deployment changes made"
 
 PM2_APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
-APP_PORT="${APP_PORT:-3017}"
+APP_PORT="${APP_PORT:-3061}"
+HEALTH_PATH="${HEALTH_PATH:-/api/health}"
+[ "$HEALTH_PATH" = /api/health ] || fail "unexpected health path"
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 RESTORE_TEST_SHA="${RESTORE_TEST_SHA:-}"
 RESTORE_TEST_REFERENCE="${RESTORE_TEST_REFERENCE:-}"
 SCHEMA_PREFLIGHT_SHA="${SCHEMA_PREFLIGHT_SHA:-}"
 SCHEMA_PREFLIGHT_REFERENCE="${SCHEMA_PREFLIGHT_REFERENCE:-}"
 MIGRATION_PLAN_APPROVED_SHA="${MIGRATION_PLAN_APPROVED_SHA:-}"
-REPO_URL="${REPO_URL:-https://github.com/alaminiubateee969-cmd/ALO-LEARNING-JOURNEY-PRODUCTION.git}"
+REPO_URL="${REPO_URL:-https://github.com/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION.git}"
 RELEASES_DIR="$APP_DIR/releases"
 SHARED_DIR="$APP_DIR/shared"
 CURRENT_LINK="$APP_DIR/current"
@@ -29,7 +31,7 @@ REPO_DIR="$APP_DIR/repo"
 BACKUP_DIR="$SHARED_DIR/.backups"
 
 [[ "$PM2_APP_NAME" == "learn-aloeducation" ]] || fail "PM2_APP_NAME must equal the verified learn-aloeducation process name"
-[[ "$APP_PORT" == "3017" ]] || fail "APP_PORT must equal the verified port 3017"
+[[ "$APP_PORT" == "3061" ]] || fail "APP_PORT must equal the verified port 3061"
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "EXPECTED_SHA must be a full lowercase commit SHA"
 [ "$RESTORE_TEST_SHA" = "$EXPECTED_SHA" ] || fail "RESTORE_TEST_SHA must match the exact release after an isolated production-backup restore rehearsal"
 [[ "$RESTORE_TEST_REFERENCE" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || fail "RESTORE_TEST_REFERENCE must identify the reviewed restore evidence without spaces or secrets"
@@ -72,7 +74,7 @@ esac
 [ -f "$PREV_TARGET/RELEASE_SHA" ] || fail "current release has no RELEASE_SHA proof; no known-good rollback target"
 PREV_SHA="$(cat "$PREV_TARGET/RELEASE_SHA")"
 [[ "$PREV_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "current release SHA proof is malformed"
-LOCAL_CODE="$(curl --connect-timeout 5 --max-time 10 -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${APP_PORT}/api/health" || true)"
+LOCAL_CODE="$(curl --connect-timeout 5 --max-time 10 -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" || true)"
 [ "$LOCAL_CODE" = "200" ] || fail "known-good release health returned $LOCAL_CODE; no code or database change made"
 
 LOCK_FILE="/tmp/${PM2_APP_NAME}-deploy.lock"
@@ -354,7 +356,7 @@ fi
 
 healthy=""
 for _ in $(seq 1 30); do
-  health_json="$(curl --connect-timeout 5 --max-time 10 -fsS "http://127.0.0.1:${APP_PORT}/api/health" 2>/dev/null || true)"
+  health_json="$(curl --connect-timeout 5 --max-time 10 -fsS "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" 2>/dev/null || true)"
   health_status="$(printf '%s' "$health_json" | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
   health_sha="$(printf '%s' "$health_json" | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).releaseSha||"")}catch{}})')"
   if [ "$health_status" = "ok" ] && [ "$health_sha" = "$EXPECTED_SHA" ] && pm2_process_is_online; then healthy=1; break; fi
