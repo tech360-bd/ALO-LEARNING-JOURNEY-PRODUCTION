@@ -43,7 +43,9 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      # Isolated, throwaway CI database only — never a production URL.
+      # Explicitly identify this as CI so disposable-database guards don't rely
+      # on runner-specific defaults. DATABASE_URL is isolated and throwaway.
+      CI: 'true'
       DATABASE_URL: "mysql://ci:ci@127.0.0.1:3306/ci"
 
     steps:
@@ -131,13 +133,22 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Unit tests and deploy rollback test
-        run: |
-          npm test
-          bash scripts/test-deploy-rollback.sh
-          TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-tenant-workflows.ts
-          node scripts/verify-media-pipeline.mjs
-          TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-photo-video-workflow.ts
+      # Keep these checks separate: a failure must identify the exact suite in
+      # the Actions summary instead of being flattened into one exit code.
+      - name: Unit tests
+        run: npm test
+
+      - name: Deploy rollback test
+        run: bash scripts/test-deploy-rollback.sh
+
+      - name: Tenant authentication and billing integration test
+        run: TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-tenant-workflows.ts
+
+      - name: Offline media pipeline smoke test
+        run: node scripts/verify-media-pipeline.mjs
+
+      - name: Photo-video handler workflow test
+        run: TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-photo-video-workflow.ts
 
       # Built without JWT_SECRET / VAULT_MASTER_KEY on purpose, like the server
       # build in scripts/deploy-production.sh: MarketingOS secrets are runtime-only

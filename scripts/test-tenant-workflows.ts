@@ -8,7 +8,14 @@ import { requireTestDatabase } from './require-test-database.mjs';
 async function main() {
   requireTestDatabase();
   const id = randomUUID();
-  Object.assign(process.env, { JWT_SECRET: randomBytes(32).toString('hex'), VAULT_MASTER_KEY: randomBytes(32).toString('base64') });
+  // Tests must not inherit a runner/operator production mode: registration is
+  // intentionally disabled in production. The disposable-DB guard above runs
+  // before this override and still refuses to execute from NODE_ENV=production.
+  Object.assign(process.env, {
+    NODE_ENV: 'test',
+    JWT_SECRET: randomBytes(32).toString('hex'),
+    VAULT_MASTER_KEY: randomBytes(32).toString('base64'),
+  });
   const { db } = await import('../src/lib/db');
   const register = await import('../src/app/api/auth/register/route');
   const login = await import('../src/app/api/auth/login/route');
@@ -115,4 +122,9 @@ async function main() {
     console.log('PASS: tenant registration rollback, grants, invitation persistence, MFA challenge/replay and concurrent refresh isolation');
   } finally { await db.$disconnect(); }
 }
-main().catch(e => { console.error(e.message); process.exitCode = 1; });
+main().catch(error => {
+  // Preserve the assertion line in CI logs; message-only output made the
+  // original combined workflow step impossible to diagnose.
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  process.exitCode = 1;
+});
