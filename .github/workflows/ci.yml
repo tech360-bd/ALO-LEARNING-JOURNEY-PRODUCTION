@@ -144,6 +144,9 @@ jobs:
       - name: Tenant authentication and billing integration test
         run: TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-tenant-workflows.ts
 
+      - name: Reliability workflow integration test
+        run: TSX_TSCONFIG_PATH="$PWD/tsconfig.json" node --import tsx scripts/test-reliability-workflows.ts
+
       - name: Offline media pipeline smoke test
         run: node scripts/verify-media-pipeline.mjs
 

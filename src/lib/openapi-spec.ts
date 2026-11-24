@@ -171,6 +171,21 @@ export const openApiSpec = {
         responses: { "200": { description: "Rendered local MP4" }, "400": { description: "Invalid input" }, "503": { description: "Local media dependencies are unavailable" } },
       },
     },
+    "/api/video/long": {
+      get: {
+        tags: ["Local AI", "Media"],
+        summary: "Poll an asynchronous long-video render job",
+        parameters: [{ name: "jobId", in: "query", required: true, schema: { type: "string", pattern: "^video_[0-9a-f-]{36}$" } }],
+        responses: { "200": { description: "Owner-scoped render status; final media URL is present only after merge" }, "404": { description: "Job not found" } },
+      },
+      post: {
+        tags: ["Local AI", "Media"],
+        summary: "Create a narrated video up to 60 minutes using chunked local rendering",
+        description: "Requires a complete narration script. Local TTS is measured, rendered into two-minute H.264/AAC chunks, and merged into one final MP4. Short scripts fail rather than being padded with repeated filler. Visuals are branded title/caption cards, not AI-generated footage. Intermediate chunks are deleted after successful validation.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["topic", "script", "durationSec"], properties: { topic: { type: "string", maxLength: 160 }, script: { type: "string", minLength: 80, maxLength: 180000 }, durationSec: { type: "integer", minimum: 60, maximum: 3600 }, voice: { type: "string", default: "bn" } } } } } },
+        responses: { "202": { description: "Queued job id for status polling" }, "400": { description: "Invalid request" }, "409": { description: "An owner-scoped long-video job is already active" } },
+      },
+    },
     "/api/media/video/{id}": {
       parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", pattern: "^(video|cine)_" } }],
       get: { tags: ["Media"], summary: "Stream a generated MP4", description: "Authenticated, private byte-range response for a local generated video.", responses: { "200": { description: "MP4 video", content: { "video/mp4": { schema: { type: "string", format: "binary" } } } }, "206": { description: "Partial MP4 byte range" }, "404": { description: "Video not found" } } },

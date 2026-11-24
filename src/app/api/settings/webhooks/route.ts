@@ -3,6 +3,7 @@ import { publicUrl } from '@/lib/public-http';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { createWebhookSecret, storeWebhookSecret } from '@/lib/webhook-signature';
 
 // GET /api/settings/webhooks
 export async function GET(req: NextRequest) {
@@ -26,8 +27,8 @@ export async function GET(req: NextRequest) {
         createdAt: w.createdAt.toISOString(),
       })),
     });
-  } catch (err) {
-    console.error('[GET /api/settings/webhooks]', err);
+  } catch {
+    console.error('[GET /api/settings/webhooks] failed');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -45,13 +46,13 @@ export async function POST(req: NextRequest) {
     try { publicUrl(data?.url, true); } catch { return NextResponse.json({ error: 'Webhook origin not approved' }, { status: 400 }); }
     if (!data.url) return NextResponse.json({ error: 'URL is required' }, { status: 400 });
 
-    const secret = crypto.randomUUID().replace(/-/g, '').slice(0, 32);
+    const secret = createWebhookSecret();
     const webhook = await db.webhook.create({
       data: {
         url: String(data.url),
         events: JSON.stringify(data.events || []),
         status: 'active',
-        secret,
+        secret: storeWebhookSecret(secret),
         companyId: payload.companyId,
       },
     });
@@ -61,10 +62,13 @@ export async function POST(req: NextRequest) {
         url: webhook.url,
         events: JSON.parse(webhook.events),
         status: webhook.status,
+        secret,
+        secretDisclosure: 'one_time',
       },
-    });
-  } catch (err) {
-    console.error('[POST /api/settings/webhooks]', err);
+    }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch {
+    // Avoid logging Prisma request objects that could contain the one-time secret.
+    console.error('[POST /api/settings/webhooks] failed');
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

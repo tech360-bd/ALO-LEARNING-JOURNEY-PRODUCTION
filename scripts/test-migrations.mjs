@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { validateMigrationTestDatabase } from "./prisma-dev-guard.mjs";
+import { EXPECTED_MIGRATIONS } from "./verify-prisma-history.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const schema = await readFile(path.join(root, "prisma", "schema.prisma"), "utf8");
@@ -97,9 +98,9 @@ async function main() {
     );
     const applied = migrationRows.filter((row) => row.finishedAt && !row.rolledBackAt);
     const failed = migrationRows.filter((row) => !row.finishedAt && !row.rolledBackAt);
-    if (applied.length !== 6 || failed.length) {
+    if (applied.length !== EXPECTED_MIGRATIONS.length || failed.length) {
       throw new Error(
-        `Expected 6 successfully applied migrations and no failed rows; applied=${applied.length}, failed=${failed.length}.`,
+        `Expected ${EXPECTED_MIGRATIONS.length} successfully applied migrations and no failed rows; applied=${applied.length}, failed=${failed.length}.`,
       );
     }
 

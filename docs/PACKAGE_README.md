@@ -1,29 +1,45 @@
-# ALO Learning Journey — Complete Package
+# ALO Learning Journey — repository guide
 
-## 📦 Package Contents
+This guide describes the current `tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION` checkout. It does not describe a downloadable package or a separate MarketingOS checkout.
 
-| File | Description |
-|------|-------------|
-| `ALO_Learning_Journey_Engineering_Audit_Report.pdf` | Full engineering audit (PDF) |
-| `alo-learning-docs.tar.gz` | Complete documentation archive |
-| `alo-learning-master-plan.patch` | Master plan code changes |
-| `docs/` | Detailed documentation folder |
-| `PULL_REQUEST_DESCRIPTION.md` | PR description template |
+## Requirements and installation
 
-## 🚀 Quick Start
+- Node.js 22.x (see `.node-version`)
+- npm
+- MySQL 8 for local API/database workflows
+- Network access to the Prisma engine distribution during `npm ci` / client generation
 
-1. Apply the patch: `git apply alo-learning-master-plan.patch`
-2. Review docs in `docs/alo-learning/`
-3. Check audit report for production readiness
+```bash
+npm ci
+```
 
-## 📊 Audit Summary
+`npm ci` uses the committed `package-lock.json`; its `postinstall` runs `prisma generate`. Do not replace this with `npm install` when validating a clean checkout.
 
-- **Files reviewed:** 116+
-- **Security issues found:** Documented in security-review.md
-- **Production readiness:** See production-readiness.md
-- **Database design:** See database-design.md
+For local database work, provision a fresh, disposable MySQL database and follow the guarded setup in the [root README](../README.md#local-development). Never point local development or destructive migration checks at production.
 
-## 🔗 Links
+## Common commands
 
-- Repository: https://github.com/alaminiubateee969-cmd/ALO-LEARNING-JOURNEY-PRODUCTION
-- Audit Report: See GitHub Releases → `v1.0.0-audit`
+```bash
+npm run dev
+npm test
+npm run lint
+npm run typecheck
+npm run verify:migrations
+npm run build
+```
+
+CI runs the canonical verification workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). The static migration verifier does not prove compatibility with production data or migration history.
+
+## Current documentation
+
+- [Project overview and development setup](../README.md)
+- [Deployment requirements and release gates](../DEPLOYMENT.md)
+- [Migration recovery and restored-copy rehearsal](../MIGRATION-RECOVERY-PLAN.md)
+- [Security policy and incident response](../SECURITY.md)
+- [Photo-to-video behavior and limits](./PHOTO_TO_VIDEO.md)
+- [Long Video Studio: chunked rendering and limits](./LONG-VIDEO-STUDIO.md)
+- [Repository audit reports](../audit/README.md)
+
+The repository's release state is recorded in [`deploy/RELEASE_MANIFEST.txt`](../deploy/RELEASE_MANIFEST.txt). That file is repository evidence, not proof that a public release was shipped. No package archive, patch, or audit release is implied by this document.
+
+Repository: <https://github.com/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION>

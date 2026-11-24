@@ -11,6 +11,7 @@ import { publicHttp } from './public-http';
  * Inspired by Chatwoot's event bus, Frappe's webhook system, and OroCRM's audit trail.
  */
 import { db } from './db';
+import { resolveWebhookSecret, signWebhookPayload } from './webhook-signature';
 
 export interface EventPayload {
   /** Company this event belongs to */
@@ -171,7 +172,7 @@ async function fireWebhooksForCompany(
         if (events.length > 0 && !events.includes(eventType)) return;
 
         const signature = webhook.secret
-          ? await hmacSha256(webhook.secret, JSON.stringify(payload))
+          ? signWebhookPayload(resolveWebhookSecret(webhook.secret), JSON.stringify(payload))
           : null;
 
         const res = await publicHttp(webhook.url, {
@@ -184,19 +185,4 @@ async function fireWebhooksForCompany(
       }
     }),
   );
-}
-
-async function hmacSha256(secret: string, payload: string): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
-  return Array.from(new Uint8Array(sig))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
 }
