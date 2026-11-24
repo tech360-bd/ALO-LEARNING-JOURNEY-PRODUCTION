@@ -10,13 +10,13 @@ const workflow = await readFile(path.join(root, ".github/workflows/deploy.yml"),
 const datadogWorkflow = await readFile(path.join(root, ".github/workflows/datadog-synthetics.yml"), "utf8");
 
 test("production deploy is pinned to the operator-provided path, PM2 name, and port", () => {
-  assert.match(deployScript, /APP_DIR="\$\{APP_DIR:-\/home\/aloedu\/LEARNING-JOURNEY\}"/);
-  assert.match(deployScript, /APP_DIR" = "\/home\/aloedu\/LEARNING-JOURNEY"/);
+  assert.match(deployScript, /APP_DIR="\$\{APP_DIR:-\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION\}"/);
+  assert.match(deployScript, /APP_DIR" = "\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION"/);
   assert.match(deployScript, /PM2_APP_NAME" == "learn-aloeducation"/);
-  assert.match(deployScript, /APP_PORT" == "3017"/);
-  assert.match(workflow, /VPS_APP_DIR must be \/home\/aloedu\/LEARNING-JOURNEY/);
+  assert.match(deployScript, /APP_PORT" == "3061"/);
+  assert.match(workflow, /VPS_APP_DIR must be \/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION/);
   assert.match(workflow, /VPS_PM2_APP must be learn-aloeducation/);
-  assert.match(workflow, /VPS_APP_PORT must be 3017/);
+  assert.match(workflow, /VPS_APP_PORT must be 3061/);
 });
 
 test("both the workflow and direct script require the exact readiness switch", () => {
@@ -91,11 +91,16 @@ test("deployment verifies exact migration checksums and requires the baseline al
 });
 
 test("public HTTPS health verification requires the exact released SHA", () => {
-  assert.match(workflow, /VPS_DOMAIN must be a verified public HTTPS URL/);
+  assert.ok(workflow.includes('DEPLOY_URL: ${{ vars.DEPLOY_URL }}'));
+  assert.ok(workflow.includes('HEALTH_PATH: ${{ vars.HEALTH_PATH }}'));
+  assert.ok(workflow.includes('[ "$DEPLOY_URL" = "http://learn.alolabs.net" ]'));
+  assert.ok(workflow.includes('[ "$HEALTH_PATH" = "/api/health" ]'));
+  assert.ok(workflow.includes('base="https://${DEPLOY_URL#http://}"'));
+  assert.ok(workflow.includes('"$base$HEALTH_PATH"'));
   assert.match(workflow, /served_sha.*\$\{\{ github\.sha \}\}/);
   assert.match(workflow, /Public health\/release verification failed/);
   assert.match(workflow, /LIVE VERIFIED: \$base reports release \$served_sha/);
-  assert.doesNotMatch(workflow, /SITE_URL:-learn\.aloeducation\.com/);
+  assert.doesNotMatch(workflow, /SITE_URL:-learn\.alolabs\.net/);
 });
 
 test("production deployment fails closed if human-review protection cannot be verified", () => {
@@ -112,4 +117,16 @@ test("third-party Datadog tests are disabled by default and require an explicit 
 
 test('manual deployment is restricted to main as well as the environment gate', () => {
   assert.match(workflow, /if: \$\{\{ github\.ref == 'refs\/heads\/main' && vars\.VPS_DEPLOY_ENABLED == 'true'/);
+});
+
+test('both SSH jobs pin the configured SSH port, independent of the app listener', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const script = path.join(root, 'scripts/write-pinned-host.sh');
+  const run = (port) => spawnSync('bash', [script], { encoding: 'utf8', env: {
+    SERVER_HOST: 'test.ts.net', SERVER_PORT: port, VPS_SSH_HOST_KEY: 'alias ssh-ed25519 TEST_ONLY',
+  } });
+  assert.equal(run('').stdout.trim(), 'test.ts.net ssh-ed25519 TEST_ONLY');
+  assert.equal(run('2222').stdout.trim(), '[test.ts.net]:2222 ssh-ed25519 TEST_ONLY');
+  assert.notEqual(run('70000').status, 0);
+  assert.equal(workflow.match(/bash scripts\/write-pinned-host\.sh/g)?.length, 2);
 });

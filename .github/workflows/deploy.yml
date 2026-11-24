@@ -9,7 +9,7 @@ name: Deploy to VPS
 # ── Network topology (operator configuration; not live-verified here) ───────
 # Older audit notes describe a self-hosted Ubuntu host behind NAT and Tailscale.
 # This checkout has no current VPS/network evidence. The workflow therefore
-# verifies Tailscale connectivity, TCP 22, and pinned SSH at run time; do not
+# verifies Tailscale connectivity, configured SSH port, and pinned SSH at run time; do not
 # infer a host address, firewall state, proxy, or production readiness from these
 # comments. SERVER_HOST must be an operator-verified tailnet destination; never
 # place a public host here unless its security and routing have been reviewed.
@@ -21,7 +21,7 @@ name: Deploy to VPS
 #   when VPS_DEPLOY_ENABLED == 'true' (otherwise it and `deploy` are skipped).
 #   Job `deploy` runs ONLY when ALL of the following hold:
 #     1. CI `verify` job is green (same reusable workflow as PRs);
-#     2. `network-preflight` is green (Tailscale auth + tailnet ACL + TCP 22 +
+#     2. `network-preflight` is green (Tailscale auth + tailnet ACL + configured SSH port +
 #        SSH public-key auth all proven on this run);
 #     3. repository VARIABLE VPS_DEPLOY_ENABLED == 'true' (readiness switch —
 #        keep it UNSET until the blockers in DEPLOYMENT.md §Deployment
@@ -37,9 +37,9 @@ name: Deploy to VPS
 #   Secrets: SERVER_HOST (preferred) or VPS_HOST (legacy), VPS_USER,
 #            VPS_SSH_KEY, VPS_SSH_HOST_KEY, VPS_PORT (optional, default 22),
 #            TAILSCALE_OAUTH_CLIENT_ID, TAILSCALE_OAUTH_SECRET
-#   Variables: VPS_APP_DIR=/home/aloedu/LEARNING-JOURNEY,
-#              VPS_PM2_APP=learn-aloeducation, VPS_APP_PORT=3017,
-#              VPS_DOMAIN=https://learn.aloeducation.com,
+#   Variables: VPS_APP_DIR=/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION,
+#              VPS_PM2_APP=learn-aloeducation, VPS_APP_PORT=3061,
+#              DEPLOY_URL=http://learn.alolabs.net, HEALTH_PATH=/api/health,
 #              VPS_RESTORE_TEST_SHA + VPS_RESTORE_TEST_REFERENCE (only after an
 #              isolated restore rehearsal), VPS_SCHEMA_PREFLIGHT_SHA +
 #              VPS_SCHEMA_PREFLIGHT_REFERENCE (only after schema/history review),
@@ -69,7 +69,7 @@ jobs:
     name: verify
     uses: ./.github/workflows/ci.yml
 
-  # ── Read-only network evidence: Tailscale auth, ACL reachability, TCP 22 ──
+  # ── Read-only network evidence: Tailscale auth, ACL reachability, configured SSH port ──
   network-preflight:
     name: network-preflight
     # Manual runs (preflight-only / deploy) always test the network. On push it
@@ -124,6 +124,7 @@ jobs:
 
       - name: Configure SSH (pinned host key, key material only)
         env:
+          SERVER_PORT: ${{ secrets.VPS_PORT }}
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
@@ -136,15 +137,14 @@ jobs:
           # to the configured deploy host so verification works identically for
           # the tailnet IP and any alias. Hashed known_hosts lines are not
           # supported — see deploy/tailscale/README.md §Host-key pinning.
-          printf '%s\n' "$VPS_SSH_HOST_KEY" \
-            | awk -v host="$SERVER_HOST" 'NF>=3 {print host, $2, $3}' > ~/.ssh/known_hosts
+          bash scripts/write-pinned-host.sh > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           if [ ! -s ~/.ssh/known_hosts ]; then
             echo "::error::VPS_SSH_HOST_KEY is malformed (expected at least one 'host keytype key' line). Refusing to continue."
             exit 1
           fi
 
-      - name: 'Preflight: tailnet destination + TCP 22 + SSH auth (read-only)'
+      - name: 'Preflight: tailnet destination + configured SSH port + SSH auth (read-only)'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           SERVER_PORT: ${{ secrets.VPS_PORT }}
@@ -244,6 +244,7 @@ jobs:
 
       - name: Configure SSH (pinned host key, key material only)
         env:
+          SERVER_PORT: ${{ secrets.VPS_PORT }}
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
@@ -251,15 +252,14 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VPS_SSH_HOST_KEY" \
-            | awk -v host="$SERVER_HOST" 'NF>=3 {print host, $2, $3}' > ~/.ssh/known_hosts
+          bash scripts/write-pinned-host.sh > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           if [ ! -s ~/.ssh/known_hosts ]; then
             echo "::error::VPS_SSH_HOST_KEY is malformed (expected at least one 'host keytype key' line). Refusing to deploy."
             exit 1
           fi
 
-      - name: 'Preflight (re-check): TCP 22 + SSH auth before deploy'
+      - name: 'Preflight (re-check): configured SSH port + SSH auth before deploy'
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           SERVER_PORT: ${{ secrets.VPS_PORT }}
@@ -281,15 +281,17 @@ jobs:
           SCHEMA_PREFLIGHT_SHA: ${{ vars.VPS_SCHEMA_PREFLIGHT_SHA }}
           SCHEMA_PREFLIGHT_REFERENCE: ${{ vars.VPS_SCHEMA_PREFLIGHT_REFERENCE }}
           MIGRATION_PLAN_APPROVED_SHA: ${{ vars.VPS_MIGRATION_PLAN_SHA }}
-          SITE_URL: ${{ vars.VPS_DOMAIN }}
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          HEALTH_PATH: ${{ vars.HEALTH_PATH }}
           VPS_DEPLOY_ENABLED: ${{ vars.VPS_DEPLOY_ENABLED }}
         run: |
           # These values are operator-confirmed production configuration and
           # must stay exact; no host/path/service fallback is permitted.
-          [ "$APP_DIR" = "/home/aloedu/LEARNING-JOURNEY" ] || { echo "::error::VPS_APP_DIR must be /home/aloedu/LEARNING-JOURNEY."; exit 1; }
+          [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || { echo "::error::VPS_APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION."; exit 1; }
           [ "$PM2_APP_NAME" = "learn-aloeducation" ] || { echo "::error::VPS_PM2_APP must be learn-aloeducation."; exit 1; }
-          [ "$APP_PORT" = "3017" ] || { echo "::error::VPS_APP_PORT must be 3017."; exit 1; }
-          [ "$SITE_URL" = "https://learn.aloeducation.com" ] || { echo "::error::VPS_DOMAIN must be https://learn.aloeducation.com."; exit 1; }
+          [ "$APP_PORT" = "3061" ] || { echo "::error::VPS_APP_PORT must be 3061."; exit 1; }
+          [ "$DEPLOY_URL" = "http://learn.alolabs.net" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
           [[ "$RESTORE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::VPS_RESTORE_TEST_SHA must be a 40-character lowercase commit SHA from an isolated restore rehearsal."; exit 1; }
           [[ "$RESTORE_TEST_REFERENCE" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || { echo "::error::VPS_RESTORE_TEST_REFERENCE must identify the restore rehearsal without spaces or secrets."; exit 1; }
           [[ "$SCHEMA_PREFLIGHT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::VPS_SCHEMA_PREFLIGHT_SHA must be a 40-character SHA from schema/history review."; exit 1; }
@@ -301,25 +303,32 @@ jobs:
           # EXPECTED_SHA is the exact merged main commit of this run. Pending
           # migrations additionally require the independent, exact-SHA approval
           # variable documented in MIGRATION-RECOVERY-PLAN.md.
+          # Public release proof is never accepted over plaintext HTTP. Check
+          # TLS before the remote script can change the known-good release.
+          public_health="https://${DEPLOY_URL#http://}$HEALTH_PATH"
+          code=$(curl --connect-timeout 10 --max-time 20 -sS -o /dev/null -w '%{http_code}' "$public_health")
+          [ "$code" = 200 ] || { echo "::error::Existing HTTPS health endpoint must return 200 before deployment."; exit 1; }
           ssh -i ~/.ssh/deploy_key -p "${VPS_PORT:-22}" \
             -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
             -o ConnectTimeout=20 \
             "$VPS_USER@$SERVER_HOST" \
-            "VPS_DEPLOY_ENABLED='$VPS_DEPLOY_ENABLED' EXPECTED_SHA='${{ github.sha }}' APP_DIR='$APP_DIR' PM2_APP_NAME='$PM2_APP_NAME' APP_PORT='$APP_PORT' RESTORE_TEST_SHA='$RESTORE_TEST_SHA' RESTORE_TEST_REFERENCE='$RESTORE_TEST_REFERENCE' SCHEMA_PREFLIGHT_SHA='$SCHEMA_PREFLIGHT_SHA' SCHEMA_PREFLIGHT_REFERENCE='$SCHEMA_PREFLIGHT_REFERENCE' MIGRATION_PLAN_APPROVED_SHA='$MIGRATION_PLAN_APPROVED_SHA' bash -s" \
+            "VPS_DEPLOY_ENABLED='$VPS_DEPLOY_ENABLED' EXPECTED_SHA='${{ github.sha }}' APP_DIR='$APP_DIR' PM2_APP_NAME='$PM2_APP_NAME' APP_PORT='$APP_PORT' HEALTH_PATH='$HEALTH_PATH' RESTORE_TEST_SHA='$RESTORE_TEST_SHA' RESTORE_TEST_REFERENCE='$RESTORE_TEST_REFERENCE' SCHEMA_PREFLIGHT_SHA='$SCHEMA_PREFLIGHT_SHA' SCHEMA_PREFLIGHT_REFERENCE='$SCHEMA_PREFLIGHT_REFERENCE' MIGRATION_PLAN_APPROVED_SHA='$MIGRATION_PLAN_APPROVED_SHA' bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify live site (public, via Nginx/HTTPS)
         env:
-          SITE_URL: ${{ vars.VPS_DOMAIN }}
+          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          HEALTH_PATH: ${{ vars.HEALTH_PATH }}
         run: |
-          [[ "$SITE_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?$ ]] || { echo "::error::VPS_DOMAIN must be a verified public HTTPS URL."; exit 1; }
-          base="${SITE_URL%/}"
+          [ "$DEPLOY_URL" = "http://learn.alolabs.net" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
+          base="https://${DEPLOY_URL#http://}"
           echo "Strict public health check: $base"
           health_file="$(mktemp)"
           trap 'rm -f "$health_file"' EXIT
           code="000"; health_status=""; served_sha=""
           for i in $(seq 1 10); do
-            code="$(curl --connect-timeout 10 --max-time 20 -sS -o "$health_file" -w '%{http_code}' "$base/api/health" || true)"
+            code="$(curl --connect-timeout 10 --max-time 20 -sS -o "$health_file" -w '%{http_code}' "$base$HEALTH_PATH" || true)"
             health_status="$(jq -r '.status // empty' "$health_file" 2>/dev/null || true)"
             served_sha="$(jq -r '.releaseSha // empty' "$health_file" 2>/dev/null || true)"
             if [ "$code" = "200" ] && [ "$health_status" = "ok" ] && [ "$served_sha" = "${{ github.sha }}" ]; then break; fi
@@ -327,7 +336,7 @@ jobs:
             sleep 6
           done
           [ "$code" = "200" ] && [ "$health_status" = "ok" ] && [ "$served_sha" = "${{ github.sha }}" ] || {
-            echo "::error::Public health/release verification failed: $base/api/health returned HTTP $code, status=$health_status, release=${served_sha:-unknown}; expected ${{ github.sha }}"; exit 1;
+            echo "::error::Public health/release verification failed: $base$HEALTH_PATH returned HTTP $code, status=$health_status, release=${served_sha:-unknown}; expected ${{ github.sha }}"; exit 1;
           }
           root_code="$(curl --connect-timeout 10 --max-time 20 -s -o /dev/null -w '%{http_code}' "$base/" || true)"
           echo "GET $base/ -> $root_code (200 or a redirect to login is expected)"
@@ -342,6 +351,8 @@ jobs:
         run: |
           {
             echo "## Deploy job (exact merged SHA)"
+            printf 'Candidate package version: `%s`\n' "$(jq -er '.version' package.json)"
+            echo 'Expected service: https://learn.alolabs.net (HTTPS 443) → PM2 on port 3061.'
             echo "- Expected release SHA: \`${{ github.sha }}\`"
             echo "- Deploy job outcome: \`${{ job.status }}\`"
             echo "- Server release proof: \`current/RELEASE_SHA\` must equal the SHA above (deploy script enforces)."

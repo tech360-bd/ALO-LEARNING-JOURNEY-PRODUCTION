@@ -6,7 +6,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const appName = process.env.PM2_APP_NAME || "learn-aloeducation";
-const port = Number.parseInt(process.env.APP_PORT || "3017", 10);
+const port = Number.parseInt(process.env.APP_PORT || "3061", 10);
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("APP_PORT must be an integer between 1 and 65535");
 }

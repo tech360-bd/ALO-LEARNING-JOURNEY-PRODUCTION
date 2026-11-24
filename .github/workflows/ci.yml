@@ -53,8 +53,13 @@ jobs:
       - name: Set up Node.js 22
         uses: actions/setup-node@v5
         with:
-          node-version-file: .nvmrc
+          node-version-file: .node-version
           cache: npm
+
+      - name: Record candidate version (not a release tag)
+        run: |
+          printf 'Candidate: %s · SHA: %s · Node: %s · npm: %s\n' \
+            "$(node -p 'require("./package.json").version')" "$GITHUB_SHA" "$(node -v)" "$(npm -v)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install dependencies
         run: npm ci
@@ -150,6 +155,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
 
       - name: Test redaction and scan candidate tree
         run: |

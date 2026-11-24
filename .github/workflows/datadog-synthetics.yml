@@ -30,11 +30,17 @@ jobs:
 
     - name: Check required Datadog secrets without displaying them
       env:
+        TEST_IDS: ${{ vars.ALO_DATADOG_TEST_IDS }}
         DD_API_KEY: ${{ secrets.DD_API_KEY }}
         DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
       run: |
         if [ -z "$DD_API_KEY" ] || [ -z "$DD_APP_KEY" ]; then
           echo "Datadog synthetics are enabled but required repository secrets are missing." >&2
+          exit 1
+        fi
+
+        if [ -z "${TEST_IDS//[[:space:]]/}" ]; then
+          echo 'Set ALO_DATADOG_TEST_IDS to the approved ALO test IDs before enabling synthetics.' >&2
           exit 1
         fi
 
@@ -47,6 +53,9 @@ jobs:
         # are no longer recognised and would leave the action without credentials).
         api-key: ${{secrets.DD_API_KEY}}
         app-key: ${{secrets.DD_APP_KEY}}
-        test-search-query: 'tag:e2e-tests' #Modify this tag to suit your tagging strategy
+        public-ids: ${{ vars.ALO_DATADOG_TEST_IDS }}
+        fail-on-missing-tests: true
+        # Configure the approved tests to consume {{START_URL}} in Datadog.
+        variables: 'START_URL=https://learn.alolabs.net'
 
 

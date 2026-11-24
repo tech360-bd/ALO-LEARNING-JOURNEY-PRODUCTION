@@ -14,10 +14,11 @@ The repository currently declares package version `0.2.1`. No `v2.0.0` tag or Gi
 
 Operator-provided (not independently verified) production settings:
 
-- App directory: `/home/aloedu/LEARNING-JOURNEY`
+- App directory: `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`
 - PM2 process: `learn-aloeducation`
-- Port: `3017`
-- Domain: `https://learn.aloeducation.com`
+- Port: `3061`
+- `DEPLOY_URL`: `http://learn.alolabs.net` (release verification requires HTTPS on the same host)
+- `HEALTH_PATH`: `/api/health`
 - MySQL: `db_learn` at `127.0.0.1:3306`
 
 Preserve the existing MySQL database, legacy admissions/OTP data, user assets, and relationships. Do not run an unverified migration or `prisma migrate deploy` against production. The required baseline reconciliation and restored-copy rehearsal are documented in [`MIGRATION-RECOVERY-PLAN.md`](./MIGRATION-RECOVERY-PLAN.md).
