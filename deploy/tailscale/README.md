@@ -80,10 +80,24 @@ gh secret set TAILSCALE_OAUTH_SECRET
 gh secret delete TAILSCALE_AUTH_KEY      # optional: stops the stale key being used
 ```
 
+The workflow is now **OAuth-client only** — no `authkey` input is passed.
+
+Second run (`45889640056`) proved why that matters: the OAuth pair was
+announced as `credential-in-use=oauth client pair (preferred)`, yet the run still
+died because an `authkey` input was present alongside it. The action then warned
+`Input 'authkey' has been deprecated…` and installed nothing
+(`tailscale-binary=MISSING`, `ping: sudo: tailscale: command not found`). It could
+not have joined even with perfect credentials.
+
+Both runs also reported `oauth-client-id-length=17 oauth-secret-length=17`, which
+is short enough to be a placeholder or a truncated value; the workflow now fails
+closed on that instead of spending four minutes on a doomed join, and rejects an
+`tskey-…` value in the client-id slot with the exact remedy.
+
 Then re-run **Actions → Deploy to VPS → Run workflow** with
 `mode=preflight-only` and confirm the annotations read
-`credential-in-use=oauth client pair (preferred)` and
-`Tailnet: joined`. Only after that does the gated deploy job become reachable.
+`credential-in-use=oauth client pair (preferred)`, `tailscale-binary=/usr/bin/tailscale`,
+and `Tailnet: joined`. Only after that does the gated deploy job become reachable.
 
 ## GitHub Actions configuration
 
