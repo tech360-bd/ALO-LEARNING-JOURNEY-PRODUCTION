@@ -159,6 +159,16 @@ test('both SSH jobs pin the configured SSH port, independent of the app listener
   assert.equal(workflow.match(/bash scripts\/write-pinned-host\.sh/g)?.length, 2);
 });
 
+test("tailnet tags are optional so a policy without the tag still joins", () => {
+  // 'requested tags [tag:github-runner] are invalid or not permitted' means the
+  // tag is absent from the tailnet policy; the join must not hard-require it.
+  assert.ok(workflow.includes("tags: ${{ vars.TAILSCALE_TAGS }}"));
+  assert.ok(workflow.includes("TS_TAGS: ${{ vars.TAILSCALE_TAGS }}"));
+  assert.match(workflow, /TAG_ARGS=\(\).*--advertise-tags=\$TS_TAGS/s);
+  assert.doesNotMatch(workflow, /tags: tag:github-runner/);
+  assert.match(workflow, /tagOwners/);
+});
+
 test("the tailnet join is accepted with either a plain auth key or an OAuth client", () => {
   // A plain tskey-auth key needs no OAuth scopes and never gets query params
   // appended; the OAuth pair stays supported for tailnets that require it.
