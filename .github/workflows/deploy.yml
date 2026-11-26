@@ -111,7 +111,10 @@ jobs:
       # this action are ephemeral: they log out at the end of the job and are
       # removed from the tailnet automatically. The OAuth client is scoped to
       # auth_keys write + tag:github-runner only (deploy/tailscale/README.md).
+      # Install tailscaled only; the join is performed in the next step so the
+      # real `tailscale up` error is visible (this action rethrows bare exit codes).
       - name: Tailscale connect (ephemeral tagged runner)
+        continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
           # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
@@ -128,6 +131,45 @@ jobs:
 
       # The action can log `invalid key: unable to validate API key` on every
       # retry and still complete; never continue to SSH without a live tailnet.
+      # Explicit join: prints the exact stderr from tailscale up, and retries once
+      # without --advertise-tags so a tag-ownership problem is distinguishable
+      # from a bad/expired/already-used key.
+      - name: Join tailnet (explicit, full error output)
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          set -uo pipefail
+          HOSTNAME_ARG="gha-learn-deploy-${{ github.run_id }}"
+          sudo -n tailscale status >/dev/null 2>&1 && { echo "already joined"; sudo -n tailscale status | head -5; exit 0; }
+          if [ -z "${TS_AUTH_KEY:-}" ]; then echo "::error::TAILSCALE_AUTH_KEY is empty"; exit 1; fi
+          case "$TS_AUTH_KEY" in
+            tskey-auth-*) echo "key type: auth key, length=${#TS_AUTH_KEY}" ;;
+            tskey-client-*) echo "key type: OAuth client SECRET (wrong input — that belongs in TAILSCALE_OAUTH_SECRET), length=${#TS_AUTH_KEY}" ;;
+            *) echo "key type: unrecognised prefix, length=${#TS_AUTH_KEY}" ;;
+          esac
+          attempt() {
+            local label="$1"; shift
+            echo "--- tailscale up ($label) ---"
+            sudo -n tailscale up --hostname="$HOSTNAME_ARG" --accept-routes "$@" 2>&1 | tee /tmp/tsup.err
+            local code=${PIPESTATUS[0]}
+            echo "exit=$code"
+            return "$code"
+          }
+          if attempt "tagged" --advertise-tags=tag:github-runner --authkey="$TS_AUTH_KEY"; then
+            echo "::notice title=Tailnet::joined with tag:github-runner"
+            sudo -n tailscale status | head -5
+            exit 0
+          fi
+          echo "::warning title=Tailnet::tagged join failed, retrying without tags to isolate the cause"
+          sudo -n tailscale logout >/dev/null 2>&1 || true
+          if attempt "untagged" --authkey="$TS_AUTH_KEY"; then
+            echo "::error title=Tailnet::the key joins the tailnet but cannot advertise tag:github-runner — add that tag to the key, or grant the key's owner ownership of tag:github-runner in the tailnet policy tagOwners."
+            sudo -n tailscale logout >/dev/null 2>&1 || true
+            exit 1
+          fi
+          echo "::error title=Tailnet::tailscale up rejected the credential. Output above. Common causes: key expired/revoked/already used (non-reusable keys are single-use), key belongs to another tailnet, or the value was truncated."
+          exit 1
+
       - name: Assert tailnet membership
         run: |
           if ! sudo -n tailscale status >/dev/null 2>&1; then
@@ -284,7 +326,10 @@ jobs:
             exit 1
           fi
 
+      # Install tailscaled only; the join is performed in the next step so the
+      # real `tailscale up` error is visible (this action rethrows bare exit codes).
       - name: Tailscale connect (ephemeral tagged runner)
+        continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
           # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
