@@ -3368,3 +3368,133 @@ model AgentProfile {
   @@index([companyId, isActive])
   @@index([companyId, department])
 }
+
+// ==================== SUPER ADMIN COMMAND CENTER ====================
+// ChatGPT-style owner console (/super-admin): natural-language system
+// management, omni-routing control, and self-healing. All tables are
+// additive; no existing table is altered. Owner-only (single admin
+// session via requireOwner); every action is audited in AuditLog.
+
+model SuperAdminConversation {
+  id        String              @id @default(cuid())
+  title     String              @default("New conversation")
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+  messages  SuperAdminMessage[]
+
+  @@index([updatedAt])
+}
+
+model SuperAdminMessage {
+  id             String                 @id @default(cuid())
+  conversationId String
+  conversation   SuperAdminConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String                 // user | assistant | system
+  content        String                 @db.Text
+  provider       String?                // omni-router provider that answered (assistant only)
+  runId          String?                // SuperAdminRun id (assistant turns have a durable execution timeline)
+  createdAt      DateTime               @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([runId])
+}
+
+model SuperAdminAction {
+  id        String    @id @default(cuid())
+  kind      String    // health_check | scan_errors | fix_errors | switch_provider | announce | analytics | backup | chat
+  title     String
+  detail    String?   @db.Text
+  risk      String    @default("safe") // safe | approval | destructive
+  status    String    @default("pending") // pending | approved | rejected | executed | failed
+  payload   String?   @db.Text // JSON
+  result    String?   @db.Text // JSON
+  createdAt DateTime  @default(now())
+  decidedAt DateTime?
+
+  @@index([status, createdAt])
+  @@index([kind, createdAt])
+}
+
+model SelfHealFinding {
+  id        String    @id @default(cuid())
+  kind      String    // http_error | broken_link | provider_down | db_error | seo | perf | log_error
+  severity  String    @default("warn") // info | warn | error | critical
+  title     String
+  detail    String?   @db.Text
+  url       String?   @db.Text
+  status    String    @default("open") // open | fixed | ignored
+  fixKind   String?   // suggested fix registry id
+  createdAt DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([status, severity])
+  @@index([kind, createdAt])
+}
+
+model SelfHealLearning {
+  id             String   @id @default(cuid())
+  pattern        String   @unique // normalized error signature, e.g. "provider_down:groq"
+  fixKind        String
+  attempts       Int      @default(0)
+  successes      Int      @default(0)
+  lastSuccessAt  DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@index([successes])
+}
+
+model OmniProviderHealth {
+  id                  String   @id @default(cuid())
+  providerId          String   @unique // e.g. "local-ollama", "groq", "openrouter"
+  status              String   @default("unknown") // unknown | healthy | degraded | down | cooldown
+  consecutiveFailures Int      @default(0)
+  consecutiveSuccesses Int     @default(0)
+  lastLatencyMs       Int?
+  lastError           String?  @db.Text
+  lastCheckedAt       DateTime?
+  updatedAt           DateTime @updatedAt
+}
+
+model OmniRouterState {
+  id        String   @id @default(cuid())
+  key       String   @unique // e.g. "preferred_provider"
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model SuperAdminRun {
+  id              String   @id @default(cuid())
+  ownerId         String   @default("dev-owner") // tenant isolation: every run is scoped to the owner account
+  conversationId  String
+  command         String   @db.Text // the owner's natural-language command
+  intent          String   @default("chat") // parsed intent kind
+  status          String   @default("running") // running | awaiting_approval | completed | failed | cancelled | interrupted
+  provider        String? // provider that answered (chat runs)
+  model           String? // model that answered (chat runs)
+  plan            String?  @db.Text // JSON: ordered execution steps
+  result          String?  @db.Text // JSON: final execution result
+  partialContent  String?  @db.Text // streamed content accumulated so far (partial-result persistence)
+  pendingActionId String? // SuperAdminAction id when the run awaits owner approval
+  error           String?  @db.Text
+  seq             Int      @default(0) // last persisted event sequence (durable timeline cursor)
+  startedAt       DateTime @default(now())
+  finishedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  events          SuperAdminRunEvent[]
+
+  @@index([ownerId, createdAt])
+  @@index([status])
+}
+
+model SuperAdminRunEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  run       SuperAdminRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int // monotonically increasing per run (replay cursor)
+  type      String // status | step | token | approval | error | done
+  payload   String?  @db.Text // JSON
+  createdAt DateTime @default(now())
+
+  @@unique([runId, seq])
+}

@@ -86,6 +86,44 @@ replacing it:
   directory is the original sub-project with its own `package.json`; this app does
   not build it.
 
+## Super Admin command center (omni-routing + self-healing)
+
+A ChatGPT-style owner interface at `/super-admin` that acts as the central hub
+for the whole system. The owner types natural-language instructions (Bengali or
+English) — e.g. "run a health check", "scan for errors", "switch provider to
+groq", "announce: …" — and the platform executes allowlisted operations itself.
+
+- **AI execution with guardrails.** A deterministic bilingual intent parser
+  routes the command; the run engine (`src/lib/super-admin/runs.ts`) performs
+  the action through a closed set of allowlisted plans. Every turn is a
+  persistent run with a durable, sequence-ordered event timeline that streams
+  live over SSE (cancel any time; reconnect and it resumes from where you left
+  off). Risky changes create a pending approval the owner accepts or rejects
+  in the UI; destructive actions are blocked. Nothing runs dynamic code.
+- **Omni-routing (single-active).** AI traffic is routed through
+  `src/lib/omni/router.ts`: local Ollama first, then the owner-configured
+  free-tier chain (registry priority → Z.AI → Groq → Gemini → OpenRouter-free
+  → Ollama), one provider at a time, with a circuit breaker, persisted health,
+  and a fail-closed free-tier payment guard. A catalog documents the wider
+  free-tier landscape (300+ free models on OpenRouter alone) and how to add
+  providers — catalog-only entries are never auto-called.
+- **Self-healing, self-learning.** A safe (SSRF-guarded, read-only) browser
+  scans public pages; a four-layer detector (providers / database / web / logs)
+  records findings; an allowlisted fixer applies safe fixes or raises
+  approvals; every outcome is stored so future scans suggest the fix with the
+  best historical success rate for each error signature.
+- **External API.** `/api/v1/omni/chat` and `/api/v1/omni/providers` deliver
+  the routed AI service to external applications over JWT;
+  `/api/v1/super-admin/health` is a role-gated monitoring endpoint. The full
+  contract is in the OpenAPI 3.1 spec (`/api/openapi.json`).
+
+Design, data policy, and the security checklist:
+[`docs/SUPER-ADMIN-OMNI-SELFHEAL.md`](./docs/SUPER-ADMIN-OMNI-SELFHEAL.md).
+Data policy: business content only — student/family/personal records are never
+routed to external providers. The feature is additive: 7 new tables
+(`20261125000000_super_admin_omni_selfheal`), no existing table altered, and it
+reuses the existing AI configuration (no new required env vars).
+
 ## Local development
 
 Requirements: Node.js 22.x and npm. Use a disposable development database; never point development commands at production.

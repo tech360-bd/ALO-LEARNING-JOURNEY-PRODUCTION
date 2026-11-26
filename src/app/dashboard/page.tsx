@@ -2,6 +2,7 @@
 
 import React, { lazy, Suspense, useEffect } from 'react';
 import Image from 'next/image';
+import { useRouter } from 'next/navigation';
 import { ThemeProvider } from 'next-themes';
 import { useAppStore, type ViewId } from '@/stores/app-store';
 import { LoginView } from '@/components/views/login-view';
@@ -141,6 +142,7 @@ function ViewFallback() {
 }
 
 function Sidebar() {
+  const router = useRouter();
   const { user, activeView, setActiveView, isSidebarOpen, toggleSidebar, setSidebarOpen, logout } = useAppStore();
 
   const handleNavClick = (id: ViewId) => {
@@ -185,6 +187,37 @@ function Sidebar() {
         {/* Navigation */}
         <ScrollArea className="flex-1 py-3 px-2">
           <div className="space-y-1">
+            {/* Super Admin command center — standalone ChatGPT-style hub */}
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => { router.push('/super-admin'); }}
+                  className={`
+                    w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-semibold mb-2
+                    border border-primary/30 bg-gradient-to-r from-primary/10 to-chart-2/5
+                    text-primary hover:from-primary/20 hover:to-chart-2/10 transition-all duration-200 group relative
+                    ${!isSidebarOpen ? 'justify-center px-0' : ''}
+                  `}
+                >
+                  <span className="shrink-0 text-primary group-hover:text-primary">
+                    <Sparkles className="w-4 h-4" />
+                  </span>
+                  {isSidebarOpen && (
+                    <span className="flex-1 text-left truncate">Super Admin</span>
+                  )}
+                  {isSidebarOpen && (
+                    <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4 bg-primary/10 text-primary border-0">
+                      Hub
+                    </Badge>
+                  )}
+                </button>
+              </TooltipTrigger>
+              {!isSidebarOpen && (
+                <TooltipContent side="right" className="font-medium">
+                  Super Admin command center
+                </TooltipContent>
+              )}
+            </Tooltip>
             {sections.map((section) => {
               const sectionItems = navItems.filter(n => n.section === section);
               if (sectionItems.length === 0) return null;
