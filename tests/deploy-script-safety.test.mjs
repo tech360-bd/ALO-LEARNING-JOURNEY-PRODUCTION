@@ -173,7 +173,11 @@ test("the tailnet join is accepted with either a plain auth key or an OAuth clie
   // A plain tskey-auth key needs no OAuth scopes and never gets query params
   // appended; the OAuth pair stays supported for tailnets that require it.
   assert.ok(workflow.includes("authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}"));
-  assert.ok(workflow.includes("oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}"));
+  // The action throws when an OAuth secret is passed without tags, so only the
+  // auth key may be handed to it; the OAuth pair is documented, not passed.
+  assert.doesNotMatch(workflow, /oauth-client-id: \$\{\{ secrets/);
+  assert.doesNotMatch(workflow, /oauth-secret: \$\{\{ secrets/);
+  assert.match(workflow, /authkey: \$\{\{ secrets\.TAILSCALE_AUTH_KEY \}\}/);
   assert.match(workflow, /if \[ -z "\$TS_AUTH_KEY" \] && \{/);
   assert.match(workflow, /Assert tailnet membership/);
   assert.match(workflow, /invalid key: unable to validate API key/);

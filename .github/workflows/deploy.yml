@@ -117,13 +117,13 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
-          # takes precedence and needs no OAuth scopes at all. The action appends
-          # no query parameters to it, so it is the least error-prone option.
-          # Leave it unset to use the OAuth client pair instead.
+          # Only the plain auth key is passed: the action throws 'the tags
+          # parameter is required when using an OAuth client' whenever an OAuth
+          # secret is present without tags, and it then never installs the
+          # binaries. An auth key needs no scopes and gets no query parameters
+          # appended. The OAuth pair stays in the repository for the documented
+          # alternative, but is not handed to the action here.
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           # Tag advertising is optional. A tailnet whose policy does not define
           # the tag fails the join with 'requested tags [...] are invalid or not
           # permitted', so the tag comes from a repository variable: leave
@@ -343,13 +343,13 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
-          # takes precedence and needs no OAuth scopes at all. The action appends
-          # no query parameters to it, so it is the least error-prone option.
-          # Leave it unset to use the OAuth client pair instead.
+          # Only the plain auth key is passed: the action throws 'the tags
+          # parameter is required when using an OAuth client' whenever an OAuth
+          # secret is present without tags, and it then never installs the
+          # binaries. An auth key needs no scopes and gets no query parameters
+          # appended. The OAuth pair stays in the repository for the documented
+          # alternative, but is not handed to the action here.
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           # Tag advertising is optional. A tailnet whose policy does not define
           # the tag fails the join with 'requested tags [...] are invalid or not
           # permitted', so the tag comes from a repository variable: leave
