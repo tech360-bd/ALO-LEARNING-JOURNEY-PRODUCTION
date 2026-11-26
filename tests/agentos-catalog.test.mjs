@@ -50,13 +50,24 @@ test("shared chat and image service uses local generation without the Z-AI SDK",
 
 test("every remaining legacy Z-AI SDK call is behind the fail-closed payment guard", async () => {
   const files = ["asr-transcribe", "avatar-video", "human-avatars", "image-studio", "voice-studio"];
+  const guarded = [];
   for (const name of files) {
     const route = await readFile(new URL(`../src/app/api/${name}/route.ts`, import.meta.url), "utf8");
     const lines = route.split("\n");
     const imports = lines.map((line, index) => line.includes('import("z-ai-web-dev-sdk")') ? index : -1).filter((index) => index >= 0);
-    assert.ok(imports.length > 0, `${name}: expected legacy provider call`);
-    for (const index of imports) assert.match(lines[index - 1] ?? "", /assertExternalAiAllowed/);
+    for (const index of imports) {
+      guarded.push(name);
+      assert.match(lines[index - 1] ?? "", /assertExternalAiAllowed/, `${name}: unguarded provider import`);
+    }
   }
+  // The ASR studio moved onto the local-first engine chain (asr-engine.ts), so
+  // it must not call the legacy SDK directly any more — but every route that
+  // still does must be guarded, and at least one such route must remain for
+  // this guard to be meaningful.
+  const asr = await readFile(new URL("../src/app/api/asr-transcribe/route.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(asr, /z-ai-web-dev-sdk/);
+  assert.doesNotMatch(asr, /assertExternalAiAllowed/);
+  assert.ok(guarded.length > 0, "expected at least one guarded legacy provider call to still exist");
 });
 
 test("AgentOS command planner never invokes a provider and is documented as planning only", async () => {

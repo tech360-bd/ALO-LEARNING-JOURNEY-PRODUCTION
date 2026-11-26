@@ -2,12 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import fs from 'fs';
 import path from 'path';
-import { assertExternalAiAllowed } from "@/lib/agentos/payment-guard";
+import { getAsrProviderStatus, transcribe } from "@/lib/asr-engine";
 
 /**
  * ALO ASR (Speech-to-Text) Studio
  * Transcribes uploaded audio files (wav/mp3/m4a/flac/ogg) to text.
- * Uses z-ai-web-dev-sdk ASR with base64 audio input.
+ *
+ * Provider order comes from `src/lib/asr-engine.ts`: a local faster-whisper /
+ * WhisperX / whisper.cpp daemon first, then the free Z.AI cloud ASR, then a
+ * local whisper CLI. This route used to call Z.AI directly, which (a) bypassed
+ * the local-first policy and (b) turned "no daemon and no key" into a raw
+ * provider parse error such as "No number after minus sign in JSON" being
+ * returned to the browser as a 500.
  */
 
 const SUPPORTED_FORMATS = ['wav', 'mp3', 'm4a', 'flac', 'ogg'];
@@ -35,8 +41,8 @@ export async function GET() {
       supportedFormats: SUPPORTED_FORMATS,
       maxFileSize: MAX_FILE_SIZE,
     });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: "transcription_list_failed" }, { status: 500 });
   }
 }
 
@@ -93,35 +99,55 @@ export async function POST(req: NextRequest) {
     });
 
     try {
-      assertExternalAiAllowed("z-ai-web-dev-sdk");
-      const ZAI = (await import("z-ai-web-dev-sdk")).default;
-      const zai = await ZAI.create();
-
-      // ASR expects base64 audio (without data: prefix)
-      const cleanBase64 = audioBase64.replace(/^data:audio\/\w+;base64,/, '');
-
-      const response = await zai.audio.asr.create({
-        file_base64: cleanBase64,
+      const cleanBase64 = audioBase64.replace(/^data:audio\/\w+;base64,/, "");
+      const result = await transcribe({
+        audioBase64: cleanBase64,
+        language: language === "auto" ? "auto" : language,
       });
 
-      const transcription = (response as { text?: string }).text || '';
+      const transcription = result.text ?? "";
       const wordCount = transcription.trim() ? transcription.trim().split(/\s+/).length : 0;
 
-      // estimate duration from base64 size — wav: 24000 Hz * 2 bytes
-      const estDurationSec = lowerFormat === 'wav'
-        ? Math.round((approxSize / (24000 * 2)) * 10) / 10
-        : null;
+      // Prefer the engine's measured duration; fall back to a wav size estimate.
+      const estDurationSec = result.durationSec
+        ? Math.round(result.durationSec * 10) / 10
+        : lowerFormat === "wav"
+          ? Math.round((approxSize / (24000 * 2)) * 10) / 10
+          : null;
+
+      // No engine available: report it honestly instead of storing an empty
+      // "completed" transcription that looks like a successful silent result.
+      if (result.simulated || (!transcription && result.error)) {
+        const message =
+          result.error ??
+          "No ASR engine produced text. Configure FASTER_WHISPER_URL, WHISPERX_URL, WHISPER_CPP_URL or WHISPER_CMD on the server.";
+        await db.audioTranscription.update({
+          where: { id: record.id },
+          data: { status: "failed", errorMessage: message },
+        });
+        return NextResponse.json(
+          {
+            ok: false,
+            id: record.id,
+            error: "asr_engine_unavailable",
+            message,
+            provider: result.provider,
+            providers: getAsrProviderStatus(),
+          },
+          { status: 503 },
+        );
+      }
 
       // persist transcription to a text file for download
-      const outputDir = path.join(process.cwd(), 'public', 'asr-output');
+      const outputDir = path.join(process.cwd(), "public", "asr-output");
       if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
       const textPath = path.join(outputDir, `transcript_${record.id}.txt`);
-      fs.writeFileSync(textPath, transcription, 'utf8');
+      fs.writeFileSync(textPath, transcription, "utf8");
 
       const updated = await db.audioTranscription.update({
         where: { id: record.id },
         data: {
-          status: 'completed',
+          status: "completed",
           transcription,
           wordCount,
           durationSec: estDurationSec,
@@ -133,26 +159,41 @@ export async function POST(req: NextRequest) {
         id: updated.id,
         fileName,
         format: lowerFormat,
-        language,
+        language: result.language || language,
         transcription,
         wordCount,
         durationSec: estDurationSec,
+        provider: result.provider,
+        modelId: result.modelId,
+        segments: result.segments,
         transcriptUrl: `/asr-output/transcript_${record.id}.txt`,
       });
-    } catch (asrErr) {
+    } catch {
+      // The provider message stays in the row for the operator; the response
+      // says what the caller can act on.
       await db.audioTranscription.update({
         where: { id: record.id },
-        data: {
-          status: 'failed',
-          errorMessage: (asrErr as Error).message,
-        },
+        data: { status: "failed", errorMessage: "transcription provider error" },
       });
       return NextResponse.json(
-        { ok: false, error: (asrErr as Error).message, id: record.id },
-        { status: 500 }
+        { ok: false, error: "asr_failed", id: record.id, message: "Transcription failed. Check the server log for the provider error." },
+        { status: 500 },
       );
     }
   } catch (e) {
-    return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
+    // Never forward a provider/JSON parse message to the browser; it is noise
+    // for the operator and detail for an attacker.
+    const message = e instanceof Error ? e.message : String(e);
+    const isRequestError = /JSON|Unexpected token|body/i.test(message);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: isRequestError ? "invalid_request_body" : "asr_failed",
+        message: isRequestError
+          ? "Send JSON: { audioBase64, format, fileName?, language? }."
+          : "Transcription failed. Check the server log for the provider error.",
+      },
+      { status: isRequestError ? 400 : 500 },
+    );
   }
 }

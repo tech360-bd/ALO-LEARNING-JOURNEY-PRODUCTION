@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [otpCode, setOtpCode] = useState("");
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpMessage, setOtpMessage] = useState("");
+  const [hashState, setHashState] = useState<"ok" | "missing" | "interpolated">("ok");
   const [error, setError] = useState("");
   const [setupRequired, setSetupRequired] = useState(false);
 
@@ -34,6 +35,9 @@ export default function LoginPage() {
       .then((configuration) => {
         setOtpRequired(Boolean(configuration.required));
         setOtpAvailable(Boolean(configuration.available));
+        if (configuration.passwordHash === "interpolated" || configuration.passwordHash === "missing") {
+          setHashState(configuration.passwordHash);
+        }
         if (!configuration.authConfigured || (configuration.required && !configuration.available)) setSetupRequired(true);
       })
       .catch(() => {
@@ -126,8 +130,22 @@ export default function LoginPage() {
 
           {setupRequired && (
             <div className="mb-5 rounded-xl border border-amber-300/70 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-100" role="status">
-              <p className="font-semibold">Administrator sign-in is not configured.</p>
-              <p className="mt-1 text-xs leading-relaxed">Set <code>NEXTAUTH_SECRET</code>, <code>ADMIN_EMAIL</code>, an scrypt <code>ADMIN_PASSWORD_HASH</code>, <code>ADMIN_OTP_PHONE</code>, <code>HTTPSMS_API_KEY</code>, and <code>HTTPSMS_FROM</code> before enabling production access.</p>
+              <p className="font-semibold">
+                {hashState === "interpolated"
+                  ? "Administrator sign-in rejects ADMIN_PASSWORD_HASH: dotenv rewrote it."
+                  : "Administrator sign-in is not configured."}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed">
+                {otpRequired
+                  ? <>Set <code>NEXTAUTH_SECRET</code>, <code>ADMIN_EMAIL</code>, an scrypt <code>ADMIN_PASSWORD_HASH</code>, <code>ADMIN_OTP_PHONE</code>, <code>HTTPSMS_API_KEY</code>, and <code>HTTPSMS_FROM</code> before enabling production access.</>
+                  : <>Set <code>NEXTAUTH_SECRET</code>, <code>ADMIN_EMAIL</code>, and an scrypt <code>ADMIN_PASSWORD_HASH</code> before enabling production access. SMS OTP is switched off (<code>ADMIN_OTP_REQUIRED=false</code>), so no SMS provider is needed.</>}
+              </p>
+              <p className="mt-2 text-[11px] leading-relaxed">
+                {hashState === "interpolated"
+                  ? <>The hash is present but its <code>$</code> separators were read as <code>$VARIABLE</code> references and deleted, so the value can no longer match. Re-write it with escaped dollars (<code>ADMIN_PASSWORD_HASH=scrypt\$…\$…</code>) or set it in the PM2 environment instead of <code>.env</code>.</>
+                  : <>In a <code>.env</code> file the hash must be written with escaped dollars (<code>ADMIN_PASSWORD_HASH=scrypt\$…\$…</code>) — an unescaped hash is rewritten by dotenv interpolation and rejected.</>}{" "}
+                Generate it with <code>node scripts/hash-admin-password.mjs</code>.
+              </p>
             </div>
           )}
 

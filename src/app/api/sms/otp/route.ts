@@ -40,7 +40,9 @@ export async function POST(req: NextRequest) {
     await db.smsMessage.update({
       where: { id: sms.id },
       data: {
-        status: result.status === 'simulation' ? 'sent' : result.status,
+        // Store what actually happened. Labelling a simulated send as `sent`
+        // made an undelivered SMS look delivered in the CRM timeline.
+        status: result.status,
         providerMessageId: result.providerMessageId
           ? `otp_${otp}_${result.providerName}_${result.providerMessageId}`
           : `otp_${otp}_${Date.now()}`,
@@ -51,12 +53,15 @@ export async function POST(req: NextRequest) {
       data: {
         smsId: sms.id,
         to,
-        otpSent: result.status !== 'failed',
+        otpSent: result.status === 'sent',
         simulated: result.simulated,
         provider: result.providerName,
         expiresIn: 300,
         // OTP is returned in non-production so the operator can test verification
         otp: process.env.NODE_ENV === 'production' ? undefined : otp,
+        ...(result.simulated
+          ? { warning: 'No SMS provider is configured, so this message was not delivered. Configure TWILIO_*, HTTPSMS_*, TELNYX_* or DOMOVINA_SMS_* to enable real delivery.' }
+          : {}),
         ...(result.error ? { warning: result.error } : {}),
       },
     }, { status: 201 });

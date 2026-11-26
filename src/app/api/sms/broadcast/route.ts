@@ -26,6 +26,9 @@ export async function POST(req: NextRequest) {
     if (recipients.length === 0) return NextResponse.json({ error: 'No recipients' }, { status: 400 });
     recipients = recipients.slice(0, 100);
 
+    // `sent` must mean "handed to a provider", never "queued in our database".
+    // A simulated provider call (no SMS gateway configured) delivers nothing, so
+    // it is counted and stored separately instead of inflating the sent total.
     let sent = 0, failed = 0, simulated = 0;
     const providerUsed: string[] = [];
     for (const r of recipients) {
@@ -56,15 +59,15 @@ export async function POST(req: NextRequest) {
         await db.smsMessage.update({
           where: { id: sms.id },
           data: {
-            status: result.status === 'simulation' ? 'sent' : result.status,
+            status: result.status,
             providerMessageId: result.providerMessageId
               ? `${result.providerName}_${result.providerMessageId}`
               : `broadcast_${Date.now()}_${sent}`,
           },
         });
 
-        if (result.simulated) simulated++;
-        if (result.status === 'failed') failed++;
+        if (result.status === 'simulation' || result.simulated) simulated++;
+        else if (result.status === 'failed') failed++;
         else sent++;
         if (!providerUsed.includes(result.providerName)) providerUsed.push(result.providerName);
         await new Promise(resolve => setTimeout(resolve, 100)); // rate-limit
@@ -75,7 +78,7 @@ export async function POST(req: NextRequest) {
       companyId: payload.companyId,
       userId: payload.userId,
       type: simulated > 0 && sent === 0 ? 'sms.broadcast_simulated' : 'sms.broadcast_sent',
-      title: `Broadcast to ${sent} (${simulated} simulated)`,
+      title: `Broadcast to ${sent} sent, ${simulated} simulated, ${failed} failed`,
       description: message.slice(0, 60),
       resourceType: 'sms',
       metadata: { sent, failed, simulated, total: recipients.length, providers: providerUsed },
@@ -86,8 +89,12 @@ export async function POST(req: NextRequest) {
         sent,
         failed,
         simulated,
+        undelivered: simulated,
         total: recipients.length,
         providers: providerUsed,
+        message: simulated > 0
+          ? 'Simulated recipients were stored as simulation — no SMS gateway is configured, so nothing was delivered to those numbers.'
+          : undefined,
       },
     }, { status: 201 });
   } catch (e: any) {

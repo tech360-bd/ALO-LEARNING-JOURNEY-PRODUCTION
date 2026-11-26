@@ -59,7 +59,9 @@ export async function POST(req: NextRequest) {
     await db.smsMessage.update({
       where: { id: sms.id },
       data: {
-        status: result.status === 'simulation' ? 'sent' : result.status,
+        // Store what actually happened. Labelling a simulated send as `sent`
+        // made an undelivered SMS look delivered in the CRM timeline.
+        status: result.status,
         providerMessageId: result.providerMessageId
           ? `${result.providerName}_${result.providerMessageId}`
           : `sim_${sms.id}_${Date.now()}`,
@@ -89,6 +91,9 @@ export async function POST(req: NextRequest) {
         providerMessageId: result.providerMessageId,
         simulated: result.simulated,
         createdAt: sms.createdAt.toISOString(),
+        ...(result.simulated
+          ? { warning: 'No SMS provider is configured, so this message was not delivered. Configure TWILIO_*, HTTPSMS_*, TELNYX_* or DOMOVINA_SMS_* to enable real delivery.' }
+          : {}),
         ...(result.error ? { warning: result.error } : {}),
       },
     }, { status: 201 });
