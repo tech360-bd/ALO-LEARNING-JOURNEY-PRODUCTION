@@ -94,8 +94,17 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          if [ -z "$TS_AUTH_KEY" ] && { [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; }; then
-            missing="$missing TAILSCALE_AUTH_KEY (or both TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_SECRET)"
+          # Prefer the OAuth client pair: Tailscale deprecated plain auth keys,
+          # and an ephemeral key that is not REUSABLE (or is already spent) fails
+          # the join with "invalid key" on the very next run — which is exactly
+          # how deploy run 45888174326 died, after the code was already correct.
+          # A plain auth key is accepted only as a fallback.
+          if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
+            if [ -z "$TS_AUTH_KEY" ]; then
+              missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET (recommended), or TAILSCALE_AUTH_KEY"
+            else
+              echo "::warning title=Tailnet::plain auth key in use — Tailscale deprecated auth keys; configure TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_SECRET (ephemeral, reusable) instead"
+            fi
           fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
@@ -111,83 +120,48 @@ jobs:
       # this action are ephemeral: they log out at the end of the job and are
       # removed from the tailnet automatically. The OAuth client is scoped to
       # auth_keys write + tag:github-runner only (deploy/tailscale/README.md).
-      # Install tailscaled only; the join is performed in the next step so the
-      # real `tailscale up` error is visible (this action rethrows bare exit codes).
+      # The action performs the join itself; the next step only asserts the
+      # result, because the action can swallow a failed `tailscale up`.
       - name: Tailscale connect (ephemeral tagged runner)
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # Only the plain auth key is passed: the action throws 'the tags
-          # parameter is required when using an OAuth client' whenever an OAuth
-          # secret is present without tags, and it then never installs the
-          # binaries. An auth key needs no scopes and gets no query parameters
-          # appended. The OAuth pair stays in the repository for the documented
-          # alternative, but is not handed to the action here.
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          # Tag advertising is optional. A tailnet whose policy does not define
-          # the tag fails the join with 'requested tags [...] are invalid or not
-          # permitted', so the tag comes from a repository variable: leave
-          # TAILSCALE_TAGS unset for an untagged ephemeral node.
+          # OAuth client first: Tailscale deprecated plain auth keys, and a
+          # single-use or spent key fails with "invalid key" (deploy run
+          # 45888174326). The client is scoped to auth_keys:write +
+          # tag:github-runner, and `tags` is always supplied so the action never
+          # hits its 'tags is required when using an OAuth client' branch.
+          # Fallback to the legacy auth key only when no client pair is set.
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          authkey: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets.TAILSCALE_AUTH_KEY || '' }}
+          # A tailnet whose policy does not define the tag fails the join with
+          # 'requested tags [...] are invalid or not permitted', so the tag comes
+          # from a repository variable (deploy/tailscale/README.md); leave it
+          # unset for an untagged ephemeral node.
           tags: ${{ vars.TAILSCALE_TAGS }}
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
 
       # The action can log `invalid key: unable to validate API key` on every
-      # retry and still complete; never continue to SSH without a live tailnet.
-      # Explicit join: prints the exact stderr from tailscale up, and retries once
-      # without --advertise-tags so a tag-ownership problem is distinguishable
-      # from a bad/expired/already-used key.
-      - name: Join tailnet (explicit, full error output)
-        env:
-          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          TS_TAGS: ${{ vars.TAILSCALE_TAGS }}
+      # retry and still complete, so membership is asserted explicitly. The join
+      # itself is left to the pinned action: it performs the OAuth exchange that
+      # Tailscale's deprecation of plain auth keys now requires.
+      - name: Assert the runner joined the tailnet
         run: |
           set -uo pipefail
-          HOSTNAME_ARG="gha-learn-deploy-${{ github.run_id }}"
-          sudo -n tailscale status >/dev/null 2>&1 && { echo "already joined"; sudo -n tailscale status | head -5; exit 0; }
-          if [ -z "${TS_AUTH_KEY:-}" ]; then echo "::error::TAILSCALE_AUTH_KEY is empty"; exit 1; fi
-          TS_TAGS="${TS_TAGS:-}"
-          TAG_ARGS=()
-          if [ -n "$TS_TAGS" ]; then TAG_ARGS=("--advertise-tags=$TS_TAGS"); fi
-          echo "tags requested: ${TS_TAGS:-<none — untagged node>}"
-          case "$TS_AUTH_KEY" in
-            tskey-auth-*) echo "key type: auth key, length=${#TS_AUTH_KEY}" ;;
-            tskey-client-*) echo "key type: OAuth client SECRET (wrong input — that belongs in TAILSCALE_OAUTH_SECRET), length=${#TS_AUTH_KEY}" ;;
-            *) echo "key type: unrecognised prefix, length=${#TS_AUTH_KEY}" ;;
-          esac
-          attempt() {
-            local label="$1"; shift
-            echo "--- tailscale up ($label) ---"
-            sudo -n tailscale up --hostname="$HOSTNAME_ARG" --accept-routes "$@" 2>&1 | tee /tmp/tsup.err
-            local code=${PIPESTATUS[0]}
-            echo "exit=$code"
-            return "$code"
-          }
-          if attempt "configured" "${TAG_ARGS[@]}" --authkey="$TS_AUTH_KEY"; then
-            echo "::notice title=Tailnet::joined (tags: ${TS_TAGS:-none})"
+          if sudo -n tailscale status >/dev/null 2>&1; then
+            echo "::notice title=Tailnet::joined"
             sudo -n tailscale status | head -5
             exit 0
           fi
-          sudo -n tailscale logout >/dev/null 2>&1 || true
-          if [ "${#TAG_ARGS[@]}" -gt 0 ]; then
-            echo "::warning title=Tailnet::tagged join failed, retrying without tags"
-            if attempt "untagged" --authkey="$TS_AUTH_KEY"; then
-              echo "::error title=Tailnet::the key joins without tags but cannot advertise '$TS_TAGS' — add \"tagOwners\": {\"$TS_TAGS\": [\"autogroup:admin\"]} to the tailnet access policy, or clear the TAILSCALE_TAGS repository variable."
-              sudo -n tailscale logout >/dev/null 2>&1 || true
-              exit 1
-            fi
-          fi
-          echo "::error title=Tailnet::the credential was rejected (output above). Most likely the auth key is SINGLE-USE and was already consumed by an earlier run — every successful join burns a non-reusable key, so the next run fails with 'invalid key'. Fix: Tailscale admin -> Settings -> Keys -> Generate auth key with REUSABLE (and Ephemeral) enabled, no tags required unless the policy defines them, then 'gh secret set TAILSCALE_AUTH_KEY'. Other causes: key expired/revoked, or the key belongs to a different tailnet than SERVER_HOST."
+          echo "--- tailscale status ---"
+          sudo -n tailscale status 2>&1 | head -10 || true
+          echo "--- tailscaled log (tail) ---"
+          sudo -n journalctl -u tailscaled -n 25 --no-pager 2>/dev/null | tail -25 || true
+          echo "::error title=Tailnet::the runner is not on the tailnet. 'invalid key' means the credential is wrong/revoked/expired: set TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET (OAuth client with auth_keys:write and tag:github-runner in tagOwners) — plain auth keys are deprecated, and a non-REUSABLE key is consumed by the first run. 'requested tags are invalid or not permitted' means vars.TAILSCALE_TAGS is not owned in tagOwners."
           exit 1
-
-      - name: Assert tailnet membership
-        run: |
-          if ! sudo -n tailscale status >/dev/null 2>&1; then
-            echo "::error::The runner did not join the tailnet. 'invalid key: unable to validate API key' means one of: (1) the credential itself is wrong or revoked, (2) an OAuth client lacks the auth_keys:write scope, (3) the OAuth client does not own tag:github-runner (it must also be listed under tagOwners in the tailnet policy), or (4) TAILSCALE_OAUTH_SECRET holds an auth key (tskey-auth-…) instead of a client secret — set TAILSCALE_AUTH_KEY for that case."
-            exit 1
-          fi
-          sudo -n tailscale status | head -5
 
       # The action reports only `sudo failed with exit code 1`, which hides the
       # real reason (unknown/mistagged OAuth key, ACL denial, expired client).
@@ -203,7 +177,7 @@ jobs:
           # are, so every fact is also emitted as an annotation.
           note() { echo "::notice title=Tailscale diag::$(printf '%s' "$1" | tr '\n' ' ' | head -c 900)"; }
           echo "### Tailscale diagnostics"
-          note "credential-in-use=$(if [ -n "$TS_AUTH_KEY" ]; then echo 'plain auth key (no OAuth scopes needed)'; elif [ -n "$TS_CLIENT_SECRET" ]; then echo 'oauth client pair'; else echo 'NONE — set TAILSCALE_AUTH_KEY or both OAuth secrets'; fi)"
+          note "credential-in-use=$(if [ -n "$TS_CLIENT_ID" ] && [ -n "$TS_CLIENT_SECRET" ]; then echo 'oauth client pair (preferred)'; elif [ -n "$TS_AUTH_KEY" ]; then echo 'plain auth key — deprecated by Tailscale; a non-REUSABLE key is burned after one run'; else echo 'NONE — set TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET'; fi)"
           note "oauth-client-id-length=${#TS_CLIENT_ID} oauth-secret-length=${#TS_CLIENT_SECRET} auth-key-length=${#TS_AUTH_KEY}"
           note "tailscale-binary=$(command -v tailscale || echo MISSING)"
           note "sudo-non-interactive=$(sudo -n true >/dev/null 2>&1 && echo yes || echo NO)"
@@ -321,8 +295,17 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          if [ -z "$TS_AUTH_KEY" ] && { [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; }; then
-            missing="$missing TAILSCALE_AUTH_KEY (or both TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_SECRET)"
+          # Prefer the OAuth client pair: Tailscale deprecated plain auth keys,
+          # and an ephemeral key that is not REUSABLE (or is already spent) fails
+          # the join with "invalid key" on the very next run — which is exactly
+          # how deploy run 45888174326 died, after the code was already correct.
+          # A plain auth key is accepted only as a fallback.
+          if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
+            if [ -z "$TS_AUTH_KEY" ]; then
+              missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET (recommended), or TAILSCALE_AUTH_KEY"
+            else
+              echo "::warning title=Tailnet::plain auth key in use — Tailscale deprecated auth keys; configure TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_SECRET (ephemeral, reusable) instead"
+            fi
           fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
@@ -363,29 +346,35 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # Only the plain auth key is passed: the action throws 'the tags
-          # parameter is required when using an OAuth client' whenever an OAuth
-          # secret is present without tags, and it then never installs the
-          # binaries. An auth key needs no scopes and gets no query parameters
-          # appended. The OAuth pair stays in the repository for the documented
-          # alternative, but is not handed to the action here.
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          # Tag advertising is optional. A tailnet whose policy does not define
-          # the tag fails the join with 'requested tags [...] are invalid or not
-          # permitted', so the tag comes from a repository variable: leave
-          # TAILSCALE_TAGS unset for an untagged ephemeral node.
+          # OAuth client first: Tailscale deprecated plain auth keys, and a
+          # single-use or spent key fails with "invalid key" (deploy run
+          # 45888174326). The client is scoped to auth_keys:write +
+          # tag:github-runner, and `tags` is always supplied so the action never
+          # hits its 'tags is required when using an OAuth client' branch.
+          # Fallback to the legacy auth key only when no client pair is set.
+          oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          authkey: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets.TAILSCALE_AUTH_KEY || '' }}
+          # A tailnet whose policy does not define the tag fails the join with
+          # 'requested tags [...] are invalid or not permitted', so the tag comes
+          # from a repository variable (deploy/tailscale/README.md); leave it
+          # unset for an untagged ephemeral node.
           tags: ${{ vars.TAILSCALE_TAGS }}
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
 
-      - name: Assert tailnet membership
+      - name: Assert the runner joined the tailnet
         run: |
-          if ! sudo -n tailscale status >/dev/null 2>&1; then
-            echo "::error::The runner did not join the tailnet. 'invalid key: unable to validate API key' means the credential is wrong/revoked, an OAuth client lacks auth_keys:write, the client does not own tag:github-runner in tagOwners, or TAILSCALE_OAUTH_SECRET holds an auth key instead of a client secret — set TAILSCALE_AUTH_KEY for that case."
-            exit 1
+          set -uo pipefail
+          if sudo -n tailscale status >/dev/null 2>&1; then
+            sudo -n tailscale status | head -5
+            exit 0
           fi
-          sudo -n tailscale status | head -5
+          echo "--- tailscale status ---"
+          sudo -n tailscale status 2>&1 | head -10 || true
+          echo "::error title=Tailnet::the runner is not on the tailnet. 'invalid key' means the credential is wrong/revoked/expired or was already consumed (a non-REUSABLE auth key is single-use): configure TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET with auth_keys:write and tag:github-runner in tagOwners. 'requested tags are invalid or not permitted' means vars.TAILSCALE_TAGS is not owned in tagOwners."
+          exit 1
 
       - name: Configure SSH (pinned host key, key material only)
         env:

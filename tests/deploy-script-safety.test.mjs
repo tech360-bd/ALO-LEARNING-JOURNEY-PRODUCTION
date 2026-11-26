@@ -163,25 +163,39 @@ test("tailnet tags are optional so a policy without the tag still joins", () => 
   // 'requested tags [tag:github-runner] are invalid or not permitted' means the
   // tag is absent from the tailnet policy; the join must not hard-require it.
   assert.ok(workflow.includes("tags: ${{ vars.TAILSCALE_TAGS }}"));
-  assert.ok(workflow.includes("TS_TAGS: ${{ vars.TAILSCALE_TAGS }}"));
-  assert.match(workflow, /TAG_ARGS=\(\).*--advertise-tags=\$TS_TAGS/s);
+  // The hand-rolled `tailscale up` retry loop (and its TAG_ARGS assembly) was
+  // removed in favour of the pinned action; the variable is still the only
+  // source of the tag, so no tailnet policy is hard-coded.
+  assert.doesNotMatch(workflow, /--advertise-tags=/);
   assert.doesNotMatch(workflow, /tags: tag:github-runner/);
   assert.match(workflow, /tagOwners/);
 });
 
-test("the tailnet join is accepted with either a plain auth key or an OAuth client", () => {
-  // A plain tskey-auth key needs no OAuth scopes and never gets query params
-  // appended; the OAuth pair stays supported for tailnets that require it.
-  assert.ok(workflow.includes("authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}"));
-  // The action throws when an OAuth secret is passed without tags, so only the
-  // auth key may be handed to it; the OAuth pair is documented, not passed.
-  assert.doesNotMatch(workflow, /oauth-client-id: \$\{\{ secrets/);
-  assert.doesNotMatch(workflow, /oauth-secret: \$\{\{ secrets/);
-  assert.match(workflow, /authkey: \$\{\{ secrets\.TAILSCALE_AUTH_KEY \}\}/);
-  assert.match(workflow, /if \[ -z "\$TS_AUTH_KEY" \] && \{/);
-  assert.match(workflow, /Assert tailnet membership/);
-  assert.match(workflow, /invalid key: unable to validate API key/);
-  assert.equal(workflow.match(/name: Assert tailnet membership/g)?.length, 2);
+test("the tailnet join prefers the OAuth client and asserts membership afterwards", () => {
+  // Live evidence (deploy run 45888174326, 2026-11-26): the join failed with
+  // "invalid key: API key ksxrFpUF8g11CNTRL not valid" while the code was
+  // already correct. Tailscale deprecated plain auth keys, and an ephemeral key
+  // that is not REUSABLE is consumed by the first successful run. The pinned
+  // action therefore gets the OAuth pair (which it exchanges for an ephemeral
+  // auth key itself) and `tags` is always supplied, so the action never reaches
+  // its "tags is required when using an OAuth client" branch.
+  assert.ok(workflow.includes("oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}"));
+  assert.ok(workflow.includes("oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}"));
+  // A tag is never hard-coded: a tailnet without that tag in tagOwners refuses
+  // the join, so the tag still comes from a repository variable.
+  assert.ok(workflow.includes("tags: ${{ vars.TAILSCALE_TAGS }}"));
+  assert.doesNotMatch(workflow, /tags: tag:github-runner/);
+  // The legacy key survives only as an explicit fallback for tailnets that have
+  // not created an OAuth client yet.
+  assert.match(workflow, /authkey: \$\{\{ secrets\.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets\.TAILSCALE_AUTH_KEY \|\| '' \}\}/);
+  // Both jobs assert the result of the action's join, and name the real cause.
+  assert.match(workflow, /Assert the runner joined the tailnet/);
+  assert.equal(workflow.match(/name: Assert the runner joined the tailnet/g)?.length, 2);
+  assert.match(workflow, /invalid key/);
+  assert.match(workflow, /tagOwners/);
+  // The explicit `tailscale up` retry loop was removed: it duplicated the
+  // action's join and produced a second, misleading error.
+  assert.doesNotMatch(workflow, /tailscale up --hostname/);
 });
 
 test("the read-only preflight fails fast and publishes network evidence", () => {

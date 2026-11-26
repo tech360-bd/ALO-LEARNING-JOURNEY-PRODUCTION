@@ -42,6 +42,49 @@ check. See [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md) and
    reviewers. Leave `VPS_DEPLOY_ENABLED` unset until every blocker in the
    deployment runbook is resolved.
 
+## Live failure to fix first (2026-11-26)
+
+Deploy run `45888174326` (main, commit `a33ca1d`) died in **network-preflight →
+Join tailnet** with:
+
+```text
+Received error: invalid key: API key ksxrFpUF8g11CNTRL not valid
+tailscale status: Logged out.
+```
+
+The application was already deployed and correct at that point; the pipeline
+never reached the host. Diagnosis from the run's own annotations:
+
+- Credential in use: a **plain auth key** (`auth-key-length=62`), which
+  Tailscale has deprecated and which the log shows the control plane rejecting.
+- The key is **not reusable** — a successful join consumes it, so the next run
+  fails with `invalid key` again. That is why earlier deploys "used to work".
+- The OAuth client pair is present but was **not** handed to the action
+  (`oauth-client-id-length=17`), because an earlier revision of the workflow
+  avoided the action's `tags is required when using an OAuth client` error by
+  passing only the auth key.
+
+The workflow now passes the **OAuth client first** with `tags` always supplied
+(so that action branch is never taken), keeps the auth key only as an explicit
+fallback, and replaced the hand-rolled `tailscale up` retry loop with a single
+membership assertion that prints the decisive error. To make the next run green:
+
+```bash
+# 1. OAuth client: Tailscale admin → Settings → OAuth clients → new client
+#    scopes:  auth_keys: write      tags: tag:github-runner
+# 2. Tag ownership in the tailnet policy (merge, do not replace):
+#      "tagOwners": { "tag:github-runner": ["autogroup:admin"] }
+# 3. Store the pair (never in chat, never in the repo):
+gh secret set TAILSCALE_OAUTH_CLIENT_ID
+gh secret set TAILSCALE_OAUTH_SECRET
+gh secret delete TAILSCALE_AUTH_KEY      # optional: stops the stale key being used
+```
+
+Then re-run **Actions → Deploy to VPS → Run workflow** with
+`mode=preflight-only` and confirm the annotations read
+`credential-in-use=oauth client pair (preferred)` and
+`Tailnet: joined`. Only after that does the gated deploy job become reachable.
+
 ## GitHub Actions configuration
 
 Repository → **Settings → Secrets and variables → Actions**.
