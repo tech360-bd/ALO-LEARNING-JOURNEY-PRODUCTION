@@ -486,13 +486,16 @@ jobs:
           code="000"; health_status=""; served_sha=""
           for i in $(seq 1 10); do
             code="$(curl --connect-timeout 10 --max-time 20 -sS -o "$health_file" -w '%{http_code}' "$base$HEALTH_PATH" || true)"
-            health_status="$(jq -r '.status // empty' "$health_file" 2>/dev/null || true)"
+            # `healthy` = every check passed, `degraded` = optional feature
+          # unconfigured (SMTP/ASR/AI provider) but the process serves fine.
+          # `ok` is accepted for the pre-rename spelling.
+          health_status="$(jq -r '.status // empty' "$health_file" 2>/dev/null || true)"
             served_sha="$(jq -r '.releaseSha // empty' "$health_file" 2>/dev/null || true)"
-            if [ "$code" = "200" ] && [ "$health_status" = "ok" ] && [ "$served_sha" = "${{ github.sha }}" ]; then break; fi
+            if [ "$code" = "200" ] && { [ "$health_status" = "healthy" ] || [ "$health_status" = "degraded" ] || [ "$health_status" = "ok" ]; } && [ "$served_sha" = "${{ github.sha }}" ]; then break; fi
             echo "attempt $i: /api/health -> HTTP $code, status=$health_status, release=${served_sha:-unknown}; retrying in 6s"
             sleep 6
           done
-          [ "$code" = "200" ] && [ "$health_status" = "ok" ] && [ "$served_sha" = "${{ github.sha }}" ] || {
+          [ "$code" = "200" ] && { [ "$health_status" = "healthy" ] || [ "$health_status" = "degraded" ] || [ "$health_status" = "ok" ]; } && [ "$served_sha" = "${{ github.sha }}" ] || {
             echo "::error::Public health/release verification failed: $base$HEALTH_PATH returned HTTP $code, status=$health_status, release=${served_sha:-unknown}; expected ${{ github.sha }}"; exit 1;
           }
           root_code="$(curl --connect-timeout 10 --max-time 20 -s -o /dev/null -w '%{http_code}' "$base/" || true)"

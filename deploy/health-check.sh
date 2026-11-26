@@ -37,9 +37,15 @@ check_endpoint() {
   body="$(curl --connect-timeout 8 --max-time 15 --fail --silent --show-error "$url" 2>/dev/null)" || fail "$label health request failed"
   status="$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).status||"")}catch{}})')"
   release="$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{process.stdout.write(JSON.parse(s).releaseSha||"")}catch{}})')"
-  [ "$status" = "ok" ] || fail "$label reports status=${status:-unknown}"
+  # The probe reports `healthy` (200, all checks pass) or `degraded` (200, one
+  # optional feature unconfigured, e.g. SMTP). Both mean the process is serving.
+  # `ok` is the pre-rename spelling and is still accepted during a rollout.
+  case "$status" in
+    healthy|degraded|ok) ;;
+    *) fail "$label reports status=${status:-unknown}" ;;
+  esac
   [ "$release" = "$expected_sha" ] || fail "$label serves release ${release:-unknown}; expected $expected_sha"
-  printf '[health] %s reports status=ok and exact release %s\n' "$label" "$release"
+  printf '[health] %s reports status=%s and exact release %s\n' "$label" "$status" "$release"
 }
 
 check_endpoint "http://127.0.0.1:${PORT}/api/health" "local" "$EXPECTED_SHA"

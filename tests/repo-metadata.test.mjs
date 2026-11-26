@@ -88,3 +88,48 @@ test("withheld topics are genuinely absent from the code", async () => {
   }
   assert.deepEqual(hits, [], `MCP implementation found, add the topic back: ${hits.join(", ")}`);
 });
+
+test("topics and description are written independently, and a description 403 is not fatal", async () => {
+  // A token scoped for topics often lacks classic `administration`, so
+  // `PATCH /repos/:owner/:repo` returns 403. That used to abort the script after
+  // the topics were already written. Topics must survive, the description must
+  // be reported, and the exit path must not treat this as total failure.
+  const { apply } = await import("../scripts/apply-repo-metadata.mjs");
+  const calls = [];
+  const warnings = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    calls.push(`${method} ${String(url).replace("https://api.github.com", "")}`);
+    if (method === "PUT" && String(url).endsWith("/topics")) {
+      return new Response(JSON.stringify({ names: ["jarvis-ai", "ai-agent"] }), { status: 200 });
+    }
+    if (method === "PATCH") {
+      return new Response(JSON.stringify({ message: "Resource not accessible by integration", status: 403 }), { status: 403 });
+    }
+    if (method === "GET" && String(url).endsWith("/topics")) {
+      return new Response(JSON.stringify({ names: ["jarvis-ai", "ai-agent"] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ description: null }), { status: 200 });
+  };
+  try {
+    const result = await apply({
+      repo: "owner/name",
+      description: "test description",
+      topics: ["jarvis-ai", "ai-agent"],
+      token: "test-token",
+      log: () => {},
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.topics.ok, true);
+    assert.equal(result.description.ok, false);
+    assert.equal(result.fullyApplied, false);
+    assert.deepEqual(result.final.topics, ["jarvis-ai", "ai-agent"]);
+    assert.ok(warnings.some((w) => /administration/.test(w)), "the operator is told which scope is missing");
+    // Both writes were attempted, and the description failure did not skip it.
+    assert.ok(calls.includes("PUT /repos/owner/name/topics"));
+    assert.ok(calls.includes("PATCH /repos/owner/name"));
+  } finally {
+    globalThis.fetch = original;
+  }
+});

@@ -91,7 +91,7 @@ async function api(path, { method = "GET", body, token, accept = "application/vn
   return text ? JSON.parse(text) : null;
 }
 
-export async function apply({ repo, description, topics, token, log = console.log }) {
+export async function apply({ repo, description, topics, token, log = console.log, warn = console.warn }) {
   const current = await api(`/repos/${repo}/topics`, { token, accept: "application/vnd.github.mercy-preview+json" });
   const before = current?.names ?? [];
   const merged = [...new Set([...before, ...topics])];
@@ -104,13 +104,70 @@ export async function apply({ repo, description, topics, token, log = console.lo
   log(`result         (${merged.length}): ${merged.join(", ")}`);
   log(`description: ${description}`);
 
-  await api(`/repos/${repo}`, { method: "PATCH", body: { description, topics: merged }, token });
-  const after = await api(`/repos/${repo}`, { token });
-  const applied = await api(`/repos/${repo}/topics`, { token, accept: "application/vnd.github.mercy-preview+json" });
+  // The two writes need different token scopes: `/topics` needs the newer
+  // topic permission, while `PATCH /repos/{owner}/{repo}` needs classic
+  // "administration". A token that can set topics often cannot set the
+  // description, and a failed description used to abort the script *after* the
+  // topics had already been written. Each write is therefore independent, and
+  // the exit code reflects only the failures that actually happened.
+  const results = { topics: { ok: false, value: before, error: null }, description: { ok: false, value: null, error: null } };
+
+  try {
+    const applied = await api(`/repos/${repo}/topics`, {
+      method: "PUT",
+      body: { names: merged },
+      token,
+      accept: "application/vnd.github.mercy-preview+json",
+    });
+    results.topics = { ok: true, value: applied?.names ?? merged, error: null };
+    log(`topics applied (${results.topics.value.length})`);
+  } catch (error) {
+    results.topics.error = error.message;
+    warn(`topics not applied: ${firstLine(error.message)}`);
+  }
+
+  try {
+    const patched = await api(`/repos/${repo}`, { method: "PATCH", body: { description }, token });
+    results.description = { ok: true, value: patched?.description ?? description, error: null };
+    log(`description applied`);
+  } catch (error) {
+    results.description.error = error.message;
+    if (isPermissionError(error.message)) {
+      warn(
+        "description NOT applied: this token lacks permission for PATCH /repos/{owner}/{repo} " +
+          "(classic tokens need the `administration` scope; fine-grained tokens need " +
+          "Repository permissions → Administration: Read and write).",
+      );
+      warn(`Set it by hand: GitHub → Settings → General → Description, or rerun with a token that has the scope.`);
+    } else {
+      warn(`description not applied: ${firstLine(error.message)}`);
+    }
+  }
+
+  // Describe what is actually true now, not what was requested.
+  let now = { description: null, topics: [] };
+  try {
+    const after = await api(`/repos/${repo}`, { token });
+    const topicState = await api(`/repos/${repo}/topics`, { token, accept: "application/vnd.github.mercy-preview+json" });
+    now = { description: after?.description ?? null, topics: topicState?.names ?? [] };
+  } catch {
+    // Reporting is best-effort; the write results above are authoritative.
+  }
+
   return {
-    description: after.description,
-    topics: applied?.names ?? [],
+    ...results,
+    final: now,
+    fullyApplied: results.topics.ok && results.description.ok,
+    descriptionMissing: !results.topics.ok,
   };
+}
+
+function firstLine(message) {
+  return String(message ?? "").split("\n")[0].slice(0, 200);
+}
+
+function isPermissionError(message) {
+  return /403|not accessible|Resource not accessible|Must have admin/i.test(String(message ?? ""));
 }
 
 const isMain = process.argv[1] && process.argv[1].endsWith("apply-repo-metadata.mjs");
@@ -135,8 +192,14 @@ if (isMain) {
   try {
     const result = await apply({ repo: flags.repo, description: DESCRIPTION, topics: TOPICS, token: process.env.GH_TOKEN });
     console.log("\napplied:");
-    console.log(`  topics (${result.topics.length}): ${result.topics.join(", ")}`);
-    console.log(`  description: ${result.description}`);
+    console.log(`  topics      (${result.topics.ok ? "ok" : "FAILED"}, ${result.final.topics.length}): ${result.final.topics.join(", ")}`);
+    console.log(`  description (${result.description.ok ? "ok" : "FAILED"}): ${result.final.description ?? "<unchanged>"}`);
+    if (!result.fullyApplied) {
+      console.log("\nThe repository is in a usable state, but the run was partial. Fix the failing write above and rerun (topics are merged, so it is safe to repeat).");
+      // Only a total failure is a non-zero exit: a topics-only success is not an
+      // error the operator must abort a pipeline for.
+      if (!result.topics.ok && !result.description.ok) process.exit(1);
+    }
   } catch (error) {
     console.error(`failed: ${error.message}`);
     process.exit(1);

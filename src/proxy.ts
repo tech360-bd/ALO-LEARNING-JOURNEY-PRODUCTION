@@ -35,6 +35,9 @@ function isPublicPath(request: NextRequest): boolean {
   if (pathname === "/contact" || pathname.startsWith("/contact/")) return true;
   if (pathname === "/api/contact" || pathname.startsWith("/api/contact/")) return true;
   if (pathname === "/api/health" && searchParams.get("details") !== "1") return true;
+  // Read-only diagnostics: public only until admin auth exists (the window in
+  // which an operator has no way in), then `requireOwner()` inside the route.
+  if (pathname === "/api/health/diagnose" && !isAdminAuthenticationConfigured()) return true;
   if (pathname === "/api/v1/auth/refresh" && request.method === "POST") return true;
   if (/^\/api\/v1\/integrations\/[^/]+\/callback\/?$/.test(pathname) && request.method === "GET") {
     return true;

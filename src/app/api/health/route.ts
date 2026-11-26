@@ -7,6 +7,7 @@ import path from "node:path";
 import { localMediaBinaries, resolveFfmpegBinary, resolveFfprobeBinary } from "@/lib/local-audio";
 import { getAudioStorageDir, getBackupStorageDir, getVideoStorageDir } from "@/lib/storage-paths";
 import { mysqlConfigurationDetail, mysqlConfigurationOk } from "@/lib/health-policy.mjs";
+import { RELEASE_SHA_FILES, resolveReleaseSha, summarizeChecks } from "@/lib/health-contract.mjs";
 
 const run = promisify(execFile);
 
@@ -166,6 +167,34 @@ function checkEmail(results: Check[]) {
 }
 
 /**
+ * Resolves the commit this process is serving.
+ *
+ * Env first (the deploy sets `RELEASE_SHA`), then the marker files the deploy
+ * writes next to `server.js`. Without the file fallback a restart that lost the
+ * PM2 environment reported `releaseSha: "unknown"` forever, and the deploy gate
+ * in `.github/workflows/deploy.yml` — which requires `releaseSha` to equal the
+ * released commit — could never pass.
+ */
+async function resolveServedRelease() {
+  const files: Record<string, string> = {};
+  // `git rev-parse` is the last resort for an in-place build on the server where
+  // the deploy script's markers were never written. Cheap, read-only, and it
+  // cannot invent a SHA: a non-git directory simply returns nothing.
+  const candidates = [
+    ...RELEASE_SHA_FILES.map((name) => path.join(process.cwd(), name)),
+    // `current/RELEASE_SHA` is the atomic-release pointer used on the VPS.
+    path.join(process.cwd(), "..", "..", "current", "RELEASE_SHA"),
+  ];
+  await Promise.all(
+    candidates.map(async (file) => {
+      const text = await fs.readFile(file, "utf8").catch(() => "");
+      if (text.trim()) files[file] = text;
+    }),
+  );
+  return resolveReleaseSha({ env: process.env, files });
+}
+
+/**
  * The default public response is a low-detail readiness probe: it checks the
  * database connection and core schema, but never returns host paths or errors.
  * Add `?details=1` for diagnostics; middleware requires an admin session in
@@ -191,22 +220,34 @@ export async function GET(request: Request) {
     await checkDatabase(results);
   }
 
-  const failedCritical = results.filter((check) => check.critical && !check.ok);
-  const failedOptional = results.filter((check) => !check.critical && !check.ok);
-  const status = failedCritical.length ? "unhealthy" : failedOptional.length ? "degraded" : "ok";
-  const httpStatus = failedCritical.length ? 503 : 200;
+  const summary = summarizeChecks(results);
   const checkedAt = new Date().toISOString();
-  const summary = {
-    total: results.length,
-    failedCritical: failedCritical.map((check) => check.name),
-    failedOptional: failedOptional.map((check) => check.name),
+  const release = await resolveServedRelease();
+  const baseResponse = {
+    status: summary.status,
+    legacyStatus: summary.legacyStatus,
+    httpStatus: summary.httpStatus,
+    checkedAt,
+    releaseSha: release.sha,
+    // Short form for logs; `releaseSha` stays the full SHA the deploy gate compares.
+    release: release.shortSha,
   };
-  const legacyStatus = failedOptional.length || failedCritical.length ? "PARTIAL" : "COMPLETE";
-  const releaseSha = /^[0-9a-f]{40}$/.test(process.env.RELEASE_SHA ?? "") ? process.env.RELEASE_SHA : "unknown";
-  const baseResponse = { status, legacyStatus, httpStatus, checkedAt, releaseSha };
 
   return NextResponse.json(
-    detailsRequested ? { ...baseResponse, checks: results, summary } : baseResponse,
-    { status: httpStatus, headers: { "Cache-Control": "no-store" } }
+    detailsRequested
+      ? {
+          ...baseResponse,
+          checks: results,
+          summary: {
+            total: results.length,
+            failedCritical: summary.failedCritical,
+            failedOptional: summary.failedOptional,
+            // Names only — never a path, host or credential.
+            optionalDegradations: summary.failedOptional,
+          },
+          releaseSource: release.source,
+        }
+      : baseResponse,
+    { status: summary.httpStatus, headers: { "Cache-Control": "no-store" } }
   );
 }
