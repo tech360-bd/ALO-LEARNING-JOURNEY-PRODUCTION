@@ -127,14 +127,24 @@ jobs:
         env:
           TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
         run: |
+          # Job logs are not always downloadable, but check-run annotations always
+          # are, so every fact is also emitted as an annotation.
+          note() { echo "::notice title=Tailscale diag::$(printf '%s' "$1" | tr '\n' ' ' | head -c 900)"; }
           echo "### Tailscale diagnostics"
+          note "oauth-client-id-length=${#TS_CLIENT_ID}"
+          note "tailscale-binary=$(command -v tailscale || echo MISSING)"
+          note "sudo-non-interactive=$(sudo -n true >/dev/null 2>&1 && echo yes || echo NO)"
           echo "- OAuth client id length: ${#TS_CLIENT_ID} (must be non-zero)"
           echo "- tailscale binary: $(command -v tailscale || echo MISSING)"
-          echo "- sudo non-interactive: $(sudo -n true 2>&1 && echo yes || echo NO)"
+          echo "- sudo non-interactive: $(sudo -n true >/dev/null 2>&1 && echo yes || echo NO)"
           echo "- tailscaled.log (last 40 lines):"
-          tail -n 40 "$HOME/tailscaled.log" 2>/dev/null || echo "  (no log written)"
+          log_tail="$(tail -n 40 "$HOME/tailscaled.log" 2>/dev/null || echo '(no log written)')"
+          printf '%s\n' "$log_tail"
+          note "tailscaled.log: $(printf '%s' "$log_tail" | tail -n 12)"
           echo "- tailscale status:"
-          timeout 20 sudo -n tailscale status 2>&1 | head -20 || echo "  (not connected)"
+          st="$(timeout 20 sudo -n tailscale status 2>&1 | head -20 || echo '(not connected)')"
+          printf '%s\n' "$st"
+          note "tailscale-status: $(printf '%s' "$st" | head -6)"
 
       - name: Tailscale status (evidence)
         run: tailscale status || true
