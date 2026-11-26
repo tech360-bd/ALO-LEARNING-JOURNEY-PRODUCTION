@@ -183,3 +183,14 @@ test("the tailnet join is accepted with either a plain auth key or an OAuth clie
   assert.match(workflow, /invalid key: unable to validate API key/);
   assert.equal(workflow.match(/name: Assert tailnet membership/g)?.length, 2);
 });
+
+test("the read-only preflight fails fast and publishes network evidence", () => {
+  // The 10-minute job limit was exhausted by retries, hiding whichever layer
+  // actually failed (TCP vs host key vs SSH key).
+  assert.match(workflow, /PREFLIGHT_ATTEMPTS: '4'/);
+  assert.match(workflow, /PREFLIGHT_TCP_TIMEOUT: '5'/);
+  assert.match(workflow, /timeout-minutes: 4/);
+  assert.match(workflow, /name: Network evidence \(annotations, safe to fail\)/);
+  assert.match(workflow, /title=Network::/);
+  assert.match(workflow, /tailscale ping -c 1 -t 5s/);
+});
