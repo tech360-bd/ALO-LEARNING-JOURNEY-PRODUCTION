@@ -119,6 +119,23 @@ jobs:
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
 
+      # The action reports only `sudo failed with exit code 1`, which hides the
+      # real reason (unknown/mistagged OAuth key, ACL denial, expired client).
+      # This read-only step surfaces it without exposing any secret value.
+      - name: Tailscale diagnostics (read-only, safe to fail)
+        if: always()
+        env:
+          TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+        run: |
+          echo "### Tailscale diagnostics"
+          echo "- OAuth client id length: ${#TS_CLIENT_ID} (must be non-zero)"
+          echo "- tailscale binary: $(command -v tailscale || echo MISSING)"
+          echo "- sudo non-interactive: $(sudo -n true 2>&1 && echo yes || echo NO)"
+          echo "- tailscaled.log (last 40 lines):"
+          tail -n 40 "$HOME/tailscaled.log" 2>/dev/null || echo "  (no log written)"
+          echo "- tailscale status:"
+          timeout 20 sudo -n tailscale status 2>&1 | head -20 || echo "  (not connected)"
+
       - name: Tailscale status (evidence)
         run: tailscale status || true
 
