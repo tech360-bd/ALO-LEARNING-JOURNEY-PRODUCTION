@@ -40,7 +40,7 @@ test("raw provider and JSON errors are never returned to the browser", async () 
   const source = await read(ROUTE);
   assert.doesNotMatch(source, /error: \(e as Error\)\.message/);
   assert.doesNotMatch(source, /error: \(asrErr as Error\)\.message/);
-  assert.match(source, /error: isRequestError \? "invalid_request_body" : "asr_failed"/);
+  assert.match(source, /error: parseFailure \? "invalid_request_body" : "asr_failed"/);
   assert.match(source, /Send JSON: \{ audioBase64, format, fileName\?, language\? \}\./);
 });
 

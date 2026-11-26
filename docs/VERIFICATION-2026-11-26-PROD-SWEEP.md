@@ -126,6 +126,45 @@ These are truthful refusals, not stubs, and stay as they are:
 - AI chat/image/video provider calls stay behind `assertExternalAiAllowed()` and
   the `ALO_PAID_AI_API_ALLOWED` + `ALO_OWNER_APPROVED_PAID_AI_API` switches.
 
+## Follow-up (PR #35): why the live probe stayed 503
+
+Live report: `{"status":"unhealthy","httpStatus":503,"releaseSha":"unknown"}`.
+Both fields had a code cause, not just an environment cause:
+
+1. **`status` could never be `"ok"` unless every check passed**, including
+   optional ones. A server without `SMTP_PASS`, a whisper daemon or an AI
+   provider was therefore reported down while serving every route. Now:
+   critical failure → `unhealthy`/503; optional failure → `degraded`/200; all
+   green → `healthy`/200, with `deploy/health-check.sh` and the deploy workflow
+   accepting `healthy`, `degraded` and legacy `ok`.
+2. **`releaseSha` came only from `process.env.RELEASE_SHA`**, so any rebuild or
+   restart that lost the PM2 environment reported `"unknown"` and the deploy
+   gate could never match the released commit. Now resolved from `RELEASE_SHA`
+   → the marker file `scripts/write-release-sha.mjs` writes next to `server.js`
+   → the build-time inlined `ALO_BUILD_SHA` (`next.config.ts`). Only a full
+   40-hex SHA counts; short SHAs and placeholders stay `"unknown"`.
+3. New `GET /api/health/diagnose` explains a 503 in one request: per-area
+   `ok`/`reason`/`fix`, credential-free DSN, release source, and whether an
+   `ADMIN_PASSWORD_HASH` was destroyed by dotenv interpolation. It requires the
+   owner session once admin auth exists.
+4. `/api/ai/voice` used the Z.ai **cloud** SDK and required a MarketingOS bearer
+   token, so the admin console always got 401 and every request was 503 when the
+   paid provider was unapproved. It now uses the local engine stack
+   (Piper → eSpeak → built-in formant) and accepts the admin session; verified
+   with a real Bangla WAV.
+5. `scripts/apply-repo-metadata.mjs` wrote topics and description in one call, so
+   a description 403 aborted the script *after* topics were written. The two
+   writes are independent now: a partial run keeps the topics, prints which
+   scope is missing, and only a total failure exits non-zero.
+
+Verification added: `tests/health-contract.test.mjs` (12 tests, covering the
+`healthy`/`degraded`/`unhealthy` matrix, both gate predicates, and every SHA
+source) plus `scripts/verification/smoke-standalone.mjs`, which boots the real
+standalone server, signs in, and probes health, login, diagnose, approvals, TTS,
+omni, chat, photo→video, ASR and a static asset. Suite: **305/305**.
+
+Server steps are in [`docs/HEALTH-503-RUNBOOK.md`](./HEALTH-503-RUNBOOK.md).
+
 ## What is still unverified (honest limits)
 
 - **No MySQL and no root in this sandbox.** `prisma generate` could not fetch the

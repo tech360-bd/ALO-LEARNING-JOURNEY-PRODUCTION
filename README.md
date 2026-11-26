@@ -1,8 +1,14 @@
 # ALO Learning Journey
 
+## What this is
+
 **Bengali-first AI learning, admissions and workforce platform** — one Next.js
 app serving an admin console, a MarketingOS CRM, an omni-routed AI workforce,
-and a fully local voice/video studio. Everything below runs on this server.
+and a fully local voice/video studio. Everything below runs on this server:
+students, families, admissions, fees, exams and campaigns in one place, with
+Bengali as the primary language rather than a translation layer.
+
+Three things define the architecture:
 
 | Differentiator | What actually runs | Where |
 | --- | --- | --- |

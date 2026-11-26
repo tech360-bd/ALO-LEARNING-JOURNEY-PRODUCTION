@@ -182,18 +182,21 @@ export async function POST(req: NextRequest) {
     }
   } catch (e) {
     // Never forward a provider/JSON parse message to the browser; it is noise
-    // for the operator and detail for an attacker.
+    // for the operator and detail for an attacker. A malformed body is a 400;
+    // anything that happens after validation (database unavailable, engine
+    // crash) is a 500 — reporting it as "invalid body" sent callers chasing
+    // their own payload.
     const message = e instanceof Error ? e.message : String(e);
-    const isRequestError = /JSON|Unexpected token|body/i.test(message);
+    const parseFailure = /JSON|Unexpected token|Unexpected end of/i.test(message) && !/prisma|database|did not initialize/i.test(message);
     return NextResponse.json(
       {
         ok: false,
-        error: isRequestError ? "invalid_request_body" : "asr_failed",
-        message: isRequestError
+        error: parseFailure ? "invalid_request_body" : "asr_failed",
+        message: parseFailure
           ? "Send JSON: { audioBase64, format, fileName?, language? }."
-          : "Transcription failed. Check the server log for the provider error.",
+          : "Transcription failed before reaching an engine. Check the server log (database reachable ?).",
       },
-      { status: isRequestError ? 400 : 500 },
+      { status: parseFailure ? 400 : 500 },
     );
   }
 }
