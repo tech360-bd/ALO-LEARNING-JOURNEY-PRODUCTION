@@ -185,9 +185,14 @@ test("the tailnet join prefers the OAuth client and asserts membership afterward
   // the join, so the tag still comes from a repository variable.
   assert.ok(workflow.includes("tags: ${{ vars.TAILSCALE_TAGS }}"));
   assert.doesNotMatch(workflow, /tags: tag:github-runner/);
-  // The legacy key survives only as an explicit fallback for tailnets that have
-  // not created an OAuth client yet.
-  assert.match(workflow, /authkey: \$\{\{ secrets\.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets\.TAILSCALE_AUTH_KEY \|\| '' \}\}/);
+  // No `authkey` input at all: in live run 45889640056 passing one alongside the
+  // OAuth pair made the action warn about the deprecated key and install no
+  // binaries (tailscale-binary=MISSING), so the runner could never join.
+  assert.doesNotMatch(workflow, /^\s*authkey: \$\{\{/m);
+  // The pair must exist and must not be a placeholder or an auth key.
+  assert.match(workflow, /if \[ -z "\$TS_CLIENT_ID" \] \|\| \[ -z "\$TS_CLIENT_SECRET" \]; then/);
+  assert.match(workflow, /tskey-\*\) echo "::error title=Tailnet/);
+  assert.match(workflow, /\$\{#TS_CLIENT_ID\}" -lt 10/);
   // Both jobs assert the result of the action's join, and name the real cause.
   assert.match(workflow, /Assert the runner joined the tailnet/);
   assert.equal(workflow.match(/name: Assert the runner joined the tailnet/g)?.length, 2);

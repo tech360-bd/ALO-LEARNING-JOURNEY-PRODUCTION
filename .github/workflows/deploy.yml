@@ -94,17 +94,26 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          # Prefer the OAuth client pair: Tailscale deprecated plain auth keys,
-          # and an ephemeral key that is not REUSABLE (or is already spent) fails
-          # the join with "invalid key" on the very next run — which is exactly
-          # how deploy run 45888174326 died, after the code was already correct.
-          # A plain auth key is accepted only as a fallback.
+          # The OAuth client pair is required. Plain auth keys are deprecated by
+          # Tailscale and a non-reusable key is consumed by the first join, so a
+          # key that "worked once" fails every later run with "invalid key"
+          # (deploy runs 45888174326 and 45889640056). Nothing here prints a
+          # secret; only shapes and lengths, which cannot be replayed.
           if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
-            if [ -z "$TS_AUTH_KEY" ]; then
-              missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET (recommended), or TAILSCALE_AUTH_KEY"
-            else
-              echo "::warning title=Tailnet::plain auth key in use — Tailscale deprecated auth keys; configure TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_SECRET (ephemeral, reusable) instead"
+            missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
+          else
+            case "$TS_CLIENT_ID" in
+              k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
+              tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
+              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
+            esac
+            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
+              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
+              exit 1
             fi
+          fi
+          if [ -n "$TS_AUTH_KEY" ]; then
+            echo "::warning title=Tailnet::TAILSCALE_AUTH_KEY is set but no longer used — the workflow is OAuth-client only. Delete the secret so it cannot be mistaken for a working credential."
           fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
@@ -126,15 +135,16 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # OAuth client first: Tailscale deprecated plain auth keys, and a
-          # single-use or spent key fails with "invalid key" (deploy run
-          # 45888174326). The client is scoped to auth_keys:write +
-          # tag:github-runner, and `tags` is always supplied so the action never
-          # hits its 'tags is required when using an OAuth client' branch.
-          # Fallback to the legacy auth key only when no client pair is set.
+          # OAuth client ONLY. Tailscale deprecated plain auth keys, and a
+          # single-use key is consumed by the first successful join, so the next
+          # run dies with "invalid key" (deploy runs 45888174326 and 45889640056).
+          # `tags` is always supplied, so the action never reaches its
+          # 'tags is required when using an OAuth client' branch. An `authkey`
+          # input must not be passed at all: when both are present the action
+          # warns about the deprecated key and installs no binaries
+          # (tailscale-binary=MISSING in run 45889640056).
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          authkey: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets.TAILSCALE_AUTH_KEY || '' }}
           # A tailnet whose policy does not define the tag fails the join with
           # 'requested tags [...] are invalid or not permitted', so the tag comes
           # from a repository variable (deploy/tailscale/README.md); leave it
@@ -295,17 +305,26 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          # Prefer the OAuth client pair: Tailscale deprecated plain auth keys,
-          # and an ephemeral key that is not REUSABLE (or is already spent) fails
-          # the join with "invalid key" on the very next run — which is exactly
-          # how deploy run 45888174326 died, after the code was already correct.
-          # A plain auth key is accepted only as a fallback.
+          # The OAuth client pair is required. Plain auth keys are deprecated by
+          # Tailscale and a non-reusable key is consumed by the first join, so a
+          # key that "worked once" fails every later run with "invalid key"
+          # (deploy runs 45888174326 and 45889640056). Nothing here prints a
+          # secret; only shapes and lengths, which cannot be replayed.
           if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
-            if [ -z "$TS_AUTH_KEY" ]; then
-              missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET (recommended), or TAILSCALE_AUTH_KEY"
-            else
-              echo "::warning title=Tailnet::plain auth key in use — Tailscale deprecated auth keys; configure TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_SECRET (ephemeral, reusable) instead"
+            missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
+          else
+            case "$TS_CLIENT_ID" in
+              k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
+              tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
+              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
+            esac
+            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
+              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
+              exit 1
             fi
+          fi
+          if [ -n "$TS_AUTH_KEY" ]; then
+            echo "::warning title=Tailnet::TAILSCALE_AUTH_KEY is set but no longer used — the workflow is OAuth-client only. Delete the secret so it cannot be mistaken for a working credential."
           fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
@@ -346,15 +365,16 @@ jobs:
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
-          # OAuth client first: Tailscale deprecated plain auth keys, and a
-          # single-use or spent key fails with "invalid key" (deploy run
-          # 45888174326). The client is scoped to auth_keys:write +
-          # tag:github-runner, and `tags` is always supplied so the action never
-          # hits its 'tags is required when using an OAuth client' branch.
-          # Fallback to the legacy auth key only when no client pair is set.
+          # OAuth client ONLY. Tailscale deprecated plain auth keys, and a
+          # single-use key is consumed by the first successful join, so the next
+          # run dies with "invalid key" (deploy runs 45888174326 and 45889640056).
+          # `tags` is always supplied, so the action never reaches its
+          # 'tags is required when using an OAuth client' branch. An `authkey`
+          # input must not be passed at all: when both are present the action
+          # warns about the deprecated key and installs no binaries
+          # (tailscale-binary=MISSING in run 45889640056).
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          authkey: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID == '' && secrets.TAILSCALE_AUTH_KEY || '' }}
           # A tailnet whose policy does not define the tag fails the join with
           # 'requested tags [...] are invalid or not permitted', so the tag comes
           # from a repository variable (deploy/tailscale/README.md); leave it
