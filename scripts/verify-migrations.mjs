@@ -210,8 +210,8 @@ const modelOffsets = new Map([...schema.matchAll(/^model\s+(\w+)\s*\{/gm)].map((
 const aloModels = models.filter((name) => modelOffsets.get(name) < marketingOsMarker);
 const marketingOsModels = models.filter((name) => modelOffsets.get(name) > marketingOsMarker);
 assert(aloModels.length === 42, `Expected 42 ALO Prisma models; found ${aloModels.length}.`);
-assert(marketingOsModels.length === 99, `Expected 99 MarketingOS Prisma models; found ${marketingOsModels.length}.`);
-assert(models.length === 141, `Expected 141 Prisma models; found ${models.length}.`);
+assert(marketingOsModels.length === 108, `Expected 108 MarketingOS Prisma models; found ${marketingOsModels.length}.`);
+assert(models.length === 150, `Expected 150 Prisma models; found ${models.length}.`);
 assert(new Set(models).size === models.length, "Duplicate Prisma model names found.");
 assert(models.includes("Lead") && models.includes("MarketingLead"), "Admissions Lead and MarketingLead must remain separate models.");
 
@@ -234,8 +234,9 @@ const expectedDirectories = [
   "20261018000000_v2_additive_mysql_tables",
   "20261111000000_marketingos_workforce_tables",
   "20261124000000_social_publish_claims",
+  "20261125000000_super_admin_omni_selfheal",
 ];
-assert(JSON.stringify(directories) === JSON.stringify(expectedDirectories), "Migration directories differ from the reviewed seven-migration MySQL chain.");
+assert(JSON.stringify(directories) === JSON.stringify(expectedDirectories), "Migration directories differ from the reviewed eight-migration MySQL chain.");
 assert(readFileSync(lockPath, "utf8").trim() === 'provider = "mysql"', "Migration lock provider is not exactly MySQL.");
 
 const addedModels = new Set([
@@ -244,14 +245,22 @@ const addedModels = new Set([
 ]);
 const admissionsModels = new Set(["Lead", "LeadActivity", "Quotation", "QuotationItem"]);
 const otpModels = new Set(["AdminOtpChallenge"]);
+// Super Admin command center / omni-router / self-healing / run timelines
+// (additive).
+const superAdminModels = new Set([
+  "SuperAdminConversation", "SuperAdminMessage", "SuperAdminAction",
+  "SelfHealFinding", "SelfHealLearning", "OmniProviderHealth", "OmniRouterState",
+  "SuperAdminRun", "SuperAdminRunEvent",
+]);
 const expectedByMigration = new Map([
   ["20261001000000_initial_baseline", { expected: aloModels.filter((name) => !addedModels.has(name) && !admissionsModels.has(name) && !otpModels.has(name)), extra: ["_FamilyProfileToFamilyProject"], baseline: true }],
   ["20261007000000_human_avatar_ownership", { models: ["HumanAvatar", "AvatarVideo"] }],
   ["20261010000000_admissions_crm_quotes", { models: [...admissionsModels] }],
   ["20261010000001_admin_otp_challenges", { models: [...otpModels] }],
   ["20261018000000_v2_additive_mysql_tables", { models: ["Client", "Project", "Invoice", "MarketingCampaign", "MarketingLead", "OtpRequest", "VoiceGeneration", "AudioTranscription"] }],
-  ["20261111000000_marketingos_workforce_tables", { models: marketingOsModels }],
+  ["20261111000000_marketingos_workforce_tables", { models: marketingOsModels.filter((name) => !superAdminModels.has(name)) }],
   ["20261124000000_social_publish_claims", { models: [], alterOnly: true }],
+  ["20261125000000_super_admin_omni_selfheal", { models: [...superAdminModels] }],
 ]);
 
 const createdTables = new Set();
@@ -378,4 +387,4 @@ assert(familyJoin.relations.length === 2 && familyJoin.relations.every((relation
 const avatarMigration = readMigration("20261007000000_human_avatar_ownership").executableSql;
 assert(/REFERENCES\s+`HumanAvatar`\s*\(`id`\)\s+ON\s+DELETE\s+RESTRICT/i.test(avatarMigration), "AvatarVideo FK must restrict deletion to preserve associated video records.");
 
-console.log(`PASS: ${models.length} Prisma models, ${checkedColumns} scalar column types, indexes, unique constraints, primary keys, foreign keys, and one implicit relation table match seven additive MySQL migrations; ${checkedDefaults} TEXT expression defaults use the form MySQL 8 reports to Prisma; no destructive SQL found.`);
+console.log(`PASS: ${models.length} Prisma models, ${checkedColumns} scalar column types, indexes, unique constraints, primary keys, foreign keys, and one implicit relation table match eight additive MySQL migrations; ${checkedDefaults} TEXT expression defaults use the form MySQL 8 reports to Prisma; no destructive SQL found.`);

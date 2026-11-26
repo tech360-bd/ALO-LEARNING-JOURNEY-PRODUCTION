@@ -49,6 +49,19 @@ export const MODEL_NAMES = [
   "audioTranscription",
   "humanAvatar",
   "avatarVideo",
+  // Super Admin command center (dev fallback without MySQL).
+  "superAdminConversation",
+  "superAdminMessage",
+  "superAdminAction",
+  "selfHealFinding",
+  "selfHealLearning",
+  "omniProviderHealth",
+  "omniRouterState",
+  "superAdminRun",
+  "superAdminRunEvent",
+  // Touched by the Super Admin announce-approval flow (publish step).
+  "mosCompany",
+  "announcement",
 ] as const;
 
 export type ModelName = (typeof MODEL_NAMES)[number];
@@ -84,6 +97,11 @@ const DATE_FIELDS = new Set([
   "deadline",
   "dueDate",
   "paidAt",
+  // Super Admin command center date fields.
+  "decidedAt",
+  "resolvedAt",
+  "lastSuccessAt",
+  "lastCheckedAt",
 ]);
 
 const MODEL_DEFAULTS: Record<ModelName, () => Record<string, any>> = {
@@ -129,6 +147,18 @@ const MODEL_DEFAULTS: Record<ModelName, () => Record<string, any>> = {
   audioTranscription: () => ({ language: "auto", transcription: null, wordCount: 0, durationSec: null, status: "pending", errorMessage: null, createdAt: new Date() }),
   humanAvatar: () => ({ ownerId: "dev-admin", ethnicity: "south-asian", voiceSpeed: 0.95, backgroundStory: null, consistencySeed: null, portraitUrl: null, portraitStatus: "pending", outfitStyle: null, sceneContext: null, active: true, videoCount: 0, createdAt: new Date(), updatedAt: new Date() }),
   avatarVideo: () => ({ ownerId: "dev-admin", script: null, scenesJson: null, actualDuration: null, videoUrl: null, thumbnailUrl: null, status: "pending", progress: 0, currentStep: null, errorMessage: null, lipSyncUsed: false, lipSyncReason: null, quality: "standard", createdAt: new Date(), updatedAt: new Date() }),
+  // Super Admin command center
+  superAdminConversation: () => ({ title: "New conversation", createdAt: new Date(), updatedAt: new Date() }),
+  superAdminMessage: () => ({ role: "user", provider: null, runId: null, createdAt: new Date() }),
+  superAdminAction: () => ({ risk: "safe", status: "pending", detail: null, payload: null, result: null, createdAt: new Date(), decidedAt: null }),
+  selfHealFinding: () => ({ severity: "warn", status: "open", detail: null, url: null, fixKind: null, createdAt: new Date(), resolvedAt: null }),
+  selfHealLearning: () => ({ attempts: 0, successes: 0, lastSuccessAt: null, updatedAt: new Date() }),
+  omniProviderHealth: () => ({ status: "unknown", consecutiveFailures: 0, consecutiveSuccesses: 0, lastLatencyMs: null, lastError: null, lastCheckedAt: null, updatedAt: new Date() }),
+  omniRouterState: () => ({ updatedAt: new Date() }),
+  superAdminRun: () => ({ ownerId: "dev-owner", intent: "chat", status: "running", provider: null, model: null, plan: null, result: null, partialContent: null, pendingActionId: null, error: null, seq: 0, startedAt: new Date(), finishedAt: null, createdAt: new Date(), updatedAt: new Date() }),
+  superAdminRunEvent: () => ({ payload: null, createdAt: new Date() }),
+  mosCompany: () => ({ logo: null, website: null, industry: null, country: null, brandColors: null, targetAudience: null, marketingGoals: null, plan: "free", isActive: true, createdAt: new Date(), updatedAt: new Date() }),
+  announcement: () => ({ priority: "normal", targetRoles: "all", isActive: true, expiresAt: null, createdBy: null, createdAt: new Date(), updatedAt: new Date() }),
 };
 
 const UPDATED_AT_MODELS = new Set<ModelName>([
@@ -143,6 +173,12 @@ const UPDATED_AT_MODELS = new Set<ModelName>([
   "marketingLead",
   "humanAvatar",
   "avatarVideo",
+  // Super Admin models that carry an @updatedAt column.
+  "superAdminConversation",
+  "selfHealLearning",
+  "omniProviderHealth",
+  "omniRouterState",
+  "superAdminRun",
 ]);
 
 type StoreData = Record<ModelName, Record<string, any>[]>;
@@ -395,6 +431,15 @@ class LocalStore {
         }
         result.profiles = profiles;
       }
+
+      if (model === "superAdminConversation" && include.messages) {
+        let msgs = this.data.superAdminMessage.filter((m) => m.conversationId === row.id).map(reviveRecord);
+        if (typeof include.messages === "object") {
+          msgs = this.sortRows(msgs, include.messages.orderBy);
+          if (typeof include.messages.take === "number") msgs = msgs.slice(0, include.messages.take);
+        }
+        result.messages = msgs;
+      }
     }
 
     if (select) {
@@ -418,12 +463,17 @@ class LocalStore {
   }
 }
 
-let singletonStore: LocalStore | undefined;
+// Anchor the singleton on globalThis: Turbopack/webpack can keep separate
+// module instances per route module graph in dev, and each would otherwise
+// get its own in-memory store (two routes disagreeing about the same data).
+// The file on disk is the source of truth; the shared instance is the
+// process-wide cache in front of it.
+const globalForLocalStore = globalThis as unknown as { __aloLocalDbStore?: LocalStore };
 function getStore(): LocalStore {
-  if (!singletonStore) {
-    singletonStore = new LocalStore();
+  if (!globalForLocalStore.__aloLocalDbStore) {
+    globalForLocalStore.__aloLocalDbStore = new LocalStore();
   }
-  return singletonStore;
+  return globalForLocalStore.__aloLocalDbStore;
 }
 
 function createModelDelegate(model: ModelName) {

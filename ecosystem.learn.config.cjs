@@ -1,3 +1,29 @@
+// PM2 environment reference for the ALO Learning Journey production process.
+//
+// ⚠️ SECRETS ARE INTENTIONALLY REDACTED IN THIS REPOSITORY.
+// Production credential values (database password, NEXTAUTH_SECRET,
+// JWT_SECRET, VAULT_MASTER_KEY, backup keys, SMS provider keys, admin
+// password hash) live ONLY on the VPS — in the running PM2 process
+// environment and the server-side .env. Do NOT paste real values into
+// this file: the CI secret scanner (scripts/scan-secrets.mjs) rejects any
+// commit that contains them.
+//
+// The previous revision of this file (commit 25952fa) accidentally
+// contained real production values. Every credential that appeared there
+// must be treated as compromised and rotated by the owner:
+//   - MySQL password for learn_app_user
+//   - NEXTAUTH_SECRET
+//   - Admin password (the scrypt hash was exposed)
+//   - HTTPSMS API key
+//   - JWT_SECRET, VAULT_MASTER_KEY, BACKUP_ENCRYPTION_KEY and the other
+//     *_SECRET / *_KEY placeholders below
+// Rotate them on the server, then update the PM2 process environment
+// (pm2 reload with the new env) — never this file.
+//
+// How to apply changes to the live process (server-side, operator only):
+//   pm2 restart learn --update-env   # after editing the server's env
+// The repository deployment workflow (.github/workflows/deploy.yml) does
+// not consume this file; it is a reference template only.
 module.exports = {
   "apps": [
     {
@@ -10,23 +36,23 @@ module.exports = {
         "HOSTNAME": "127.0.0.1",
         "ENV_FILE": ".env",
         "RELEASE_SHA": "285ae7840a2159d0111989bb16272b6de7f31db5",
-        "DATABASE_URL": "mysql://learn_app_user:PhCoq2NweZAItnwas8bZQ@127.0.0.1:3306/learn_aloeducation",
+        "DATABASE_URL": "mysql://learn_app_user:REPLACE_WITH_PRODUCTION_DB_PASSWORD@127.0.0.1:3306/learn_aloeducation",
         "ALO_PRISMA_LOG": "error",
         "ALO_LOCAL_DB_FILE": "",
         "NEXTAUTH_URL": "https://learn.alolabs.net",
-        "NEXTAUTH_SECRET": "RDKjEK2NZALrqatrKfQ-4y4Wc6Y8M_9hTu4nuw6za1k",
+        "NEXTAUTH_SECRET": "",
         "ADMIN_EMAIL": "admin@aloeducation.com",
-        "ADMIN_PASSWORD_HASH": "scrypt$V2MIWnVS-u2Qkh7uQvjpiA$340gN2KQda38dBPDPJrZWg5MwBrOfRTERL977vln2lnl3DVy5gUyj8CRgce1hVDAIvIeUq_CDu_mT5c1cSclTQ",
-        "ALO_ADMIN_PASSWORD_HASH": "scrypt$V2MIWnVS-u2Qkh7uQvjpiA$340gN2KQda38dBPDPJrZWg5MwBrOfRTERL977vln2lnl3DVy5gUyj8CRgce1hVDAIvIeUq_CDu_mT5c1cSclTQ",
+        "ADMIN_PASSWORD_HASH": "",
+        "ALO_ADMIN_PASSWORD_HASH": "",
         "ALO_REQUIRE_AUTH": "true",
         "ADMIN_OTP_REQUIRED": "false",
         "ADMIN_OTP_PHONE": "+8801805020101",
-        "HTTPSMS_API_KEY": "pk_SdfBBRmBiG3MSQJG8ZnV8a4vKbWHhxV-2qdYzzmdDPg7gITMRt-vWrhNmvPApkF8",
+        "HTTPSMS_API_KEY": "",
         "HTTPSMS_FROM": "+8801805020101",
         "HTTPSMS_FROM_NUMBER": "+8801805020101",
         "HTTPSMS_BASE_URL": "https://api.httpsms.com",
         "DOMOVINA_SMS_API_URL": "https://sms.domovina.ai/api/v1",
-        "DOMOVINA_SMS_API_KEY": "domovina_api_key_12345",
+        "DOMOVINA_SMS_API_KEY": "",
         "TELNYX_API_KEY": "",
         "TELNYX_CONNECTION_ID": "",
         "TELNYX_FROM_NUMBER": "",
@@ -35,18 +61,18 @@ module.exports = {
         "TWILIO_FROM_NUMBER": "",
         "FREESWITCH_ESL_HOST": "",
         "FREESWITCH_ESL_PORT": "8021",
-        "JWT_SECRET": "alo_labs_jwt_secure_key_2026_abc_32bytes_min",
-        "SESSION_SECRET": "alo_labs_session_secure_key_2026_123_32bytes",
-        "CSRF_SECRET": "alo_labs_csrf_secure_key_2026_456_32bytes",
-        "ENCRYPTION_KEY": "alo_labs_encryption_master_key_2026_789_32b",
-        "APP_SECRET": "alo_labs_app_master_secret_2026_000_32bytes",
-        "API_GATEWAY_SECRET": "alo_labs_gateway_secret_2026_111_32bytes",
-        "API_KEY_ENCRYPTION_KEY": "alo_labs_apikey_enc_2026_222_32bytes_min",
-        "SESSION_ENCRYPTION_KEY": "alo_labs_sess_enc_2026_333_32bytes_min",
-        "WEBHOOK_SECRET": "alo_labs_webhook_secret_2026_444_32bytes",
-        "CRON_SECRET": "alo_labs_cron_secret_key_2026_555_32bytes",
-        "BACKUP_ENCRYPTION_KEY": "d42975d5a571e5dcc9d3dacde0d31520c26f36ea193722b5ead167e0c029e5b1",
-        "VAULT_MASTER_KEY": "b122d31d6c7a87cc6a11e2beeef0f48c86e27000bb8ecffe2c21a04a371e787e",
+        "JWT_SECRET": "",
+        "SESSION_SECRET": "",
+        "CSRF_SECRET": "",
+        "ENCRYPTION_KEY": "",
+        "APP_SECRET": "",
+        "API_GATEWAY_SECRET": "",
+        "API_KEY_ENCRYPTION_KEY": "",
+        "SESSION_ENCRYPTION_KEY": "",
+        "WEBHOOK_SECRET": "",
+        "CRON_SECRET": "",
+        "BACKUP_ENCRYPTION_KEY": "",
+        "VAULT_MASTER_KEY": "",
         "ALLOWED_ORIGINS": "https://learn.alolabs.net,https://alolabs.net,http://localhost:3000",
         "AV_SCANNER_ENABLED": "false",
         "NEXT_PUBLIC_APP_URL": "https://learn.alolabs.net",
@@ -139,8 +165,8 @@ module.exports = {
         "QDRANT_PORT": "6333",
         "QDRANT_API_KEY": "",
         "POSTIZ_BASE_URL": "http://localhost:3000",
-        "POSTIZ_API_KEY": "postiz_api_key_12345",
-        "POSTIZ_WORKSPACE_ID": "workspace_12345",
+        "POSTIZ_API_KEY": "",
+        "POSTIZ_WORKSPACE_ID": "",
         "N8N_BASE_URL": "",
         "CLOUDFLARE_ACCOUNT_ID": "",
         "INKBOX_ENDPOINT": "",

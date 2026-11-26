@@ -13,6 +13,8 @@ export const openApiSpec = {
     { name: "System", description: "Health, local inference status, and machine-readable API documentation." },
     { name: "Local AI", description: "Generation through private self-hosted models or explicitly reported local fallbacks; no paid AI provider routing." },
     { name: "Media", description: "Local speech, procedural instrumental audio, and FFmpeg-generated video files." },
+    { name: "Omni Routing", description: "External service delivery: one chat completion routed across the owner-configured free-tier provider chain (single-active, sequential failover). MarketingOS JWT bearer auth." },
+    { name: "Super Admin", description: "Owner-only command center: natural-language system management, provider switching, self-healing scans, and approval workflow. Administrator session auth." },
   ],
   paths: {
     "/api/crm/leads": {
@@ -239,9 +241,165 @@ export const openApiSpec = {
         responses: { "200": { description: "Health response" }, "503": { description: "Database or core schema is unavailable" }, "401": { $ref: "#/components/responses/Unauthorized" } },
       },
     },
+    "/api/v1/omni/chat": {
+      post: {
+        tags: ["Omni Routing"],
+        summary: "Route one chat completion across the free-tier provider chain",
+        description: "Single-active sequential failover: local Ollama first, then the owner-configured provider chain (registry priority, then built-ins). Destructive operations are never performed here; this is a read/answer service. Returns 503 when no real model answers.",
+        security: [{ BearerJWT: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  system: { type: "string", maxLength: 2000, description: "Optional system prompt." },
+                  message: { type: "string", minLength: 1, maxLength: 4000, description: "Required user message (business content only)." },
+                  maxTokens: { type: "integer", minimum: 1, maximum: 2000, default: 1200 },
+                },
+                required: ["message"],
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Routed completion", content: { "application/json": { schema: { $ref: "#/components/schemas/OmniChatResponse" } } } },
+          "400": { $ref: "#/components/responses/ValidationError" },
+          "401": { description: "JWT bearer token is missing or invalid" },
+          "503": { description: "No provider answered (all providers down or not enabled)." },
+        },
+      },
+    },
+    "/api/v1/omni/providers": {
+      get: {
+        tags: ["Omni Routing"],
+        summary: "Omni-router status and free-tier catalog for external apps",
+        description: "Read-only. Reports the single-active state, chain order, per-provider health, and the documented free-tier catalog. No API keys or secrets are returned.",
+        security: [{ BearerJWT: [] }],
+        responses: {
+          "200": { description: "Router status and catalog", content: { "application/json": { schema: { $ref: "#/components/schemas/OmniProvidersResponse" } } } },
+          "401": { description: "JWT bearer token is missing or invalid" },
+        },
+      },
+    },
+    "/api/v1/super-admin/health": {
+      get: {
+        tags: ["Omni Routing"],
+        summary: "System health for external monitoring (super_admin role)",
+        description: "Machine-readable health: database, omni-router, open self-heal findings, and pending approvals. Requires the tenant super_admin role.",
+        security: [{ BearerJWT: [] }],
+        responses: {
+          "200": { description: "Health payload", content: { "application/json": { schema: { type: "object" } } } },
+          "401": { description: "JWT bearer token is missing or invalid" },
+          "403": { description: "Caller lacks the super_admin role" },
+        },
+      },
+    },
+    "/api/super-admin/chat": {
+      get: {
+        tags: ["Super Admin"],
+        summary: "Load a conversation's message history",
+        parameters: [{ name: "conversationId", in: "query", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Messages", content: { "application/json": { schema: { type: "object" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" } },
+      },
+      post: {
+        tags: ["Super Admin"],
+        summary: "Send one natural-language command to the system (synchronous)",
+        description: "Every turn is a persistent run. This synchronous endpoint creates the run, awaits the pipeline, and returns the final reply. Use POST /api/super-admin/runs + the SSE events stream for incremental streaming. Parses the intent deterministically (Bengali/English), executes only allowlisted operations, and routes free-form chat through the omni-router. Risky changes create a pending approval; destructive changes are blocked.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { conversationId: { type: "string" }, message: { type: "string", minLength: 1, maxLength: 4000 } }, required: ["message"] } } } },
+        responses: { "200": { description: "Assistant turn + execution result (includes runId for the durable timeline)", content: { "application/json": { schema: { $ref: "#/components/schemas/SuperAdminChatTurn" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "503": { $ref: "#/components/responses/AuthNotConfigured" } },
+      },
+    },
+    "/api/super-admin/runs": {
+      post: {
+        tags: ["Super Admin"],
+        summary: "Start a turn as a persistent, streamable run",
+        description: "Creates the run, fires the execution pipeline in the background, and returns 202 with the runId. Follow the timeline via GET /api/super-admin/runs/{id}/events (SSE) or fetch it after a refresh via GET /api/super-admin/runs/{id}.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { conversationId: { type: "string" }, message: { type: "string", minLength: 1, maxLength: 4000 } }, required: ["message"] } } } },
+        responses: { "202": { description: "Run started", content: { "application/json": { schema: { type: "object", properties: { runId: { type: "string" }, conversationId: { type: "string" }, persistent: { type: "boolean" } } } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { description: "Conversation not found" }, "429": { description: "Rate limited" }, "503": { $ref: "#/components/responses/AuthNotConfigured" } },
+      },
+      get: { tags: ["Super Admin"], summary: "List recent runs", responses: { "200": { description: "Runs", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+    },
+    "/api/super-admin/runs/{id}": {
+      get: {
+        tags: ["Super Admin"],
+        summary: "Run row + full durable timeline (refresh/restore)",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Run + events", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { description: "Run not found" } },
+      },
+    },
+    "/api/super-admin/runs/{id}/events": {
+      get: {
+        tags: ["Super Admin"],
+        summary: "Execution timeline as Server-Sent Events",
+        description: "Replays the durable timeline from Last-Event-ID (or ?afterSeq=N), then follows live events. Strict contiguous seq ordering; closes on a terminal state. 'awaiting_approval' keeps the stream open until the owner decides.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }, { name: "afterSeq", in: "query", schema: { type: "integer" } }],
+        responses: { "200": { description: "SSE stream (text/event-stream)" }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { description: "Run not found" } },
+      },
+    },
+    "/api/super-admin/runs/{id}/cancel": {
+      post: {
+        tags: ["Super Admin"],
+        summary: "Cancel an in-flight run (idempotent)",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "200": { description: "Cancel result", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { description: "Run not found" } },
+      },
+    },
+    "/api/super-admin/providers/probe": {
+      post: {
+        tags: ["Super Admin"],
+        summary: "Verify real provider connectivity (read-only)",
+        description: "Always reports configuration state + a live Ollama /api/tags probe. With live:true it runs one minimal completion through the active chain (costs a sliver of free quota) and reports provider/model/latency. Nothing is mutated; results are audit-logged.",
+        requestBody: { required: false, content: { "application/json": { schema: { type: "object", properties: { live: { type: "boolean" } } } } } },
+        responses: { "200": { description: "Probe results", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } },
+      },
+    },
+    "/api/super-admin/conversations": {
+      get: { tags: ["Super Admin"], summary: "List conversations", responses: { "200": { description: "Conversations", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+      post: { tags: ["Super Admin"], summary: "Create a conversation", responses: { "201": { description: "Created", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+      delete: { tags: ["Super Admin"], summary: "Delete a conversation", parameters: [{ name: "id", in: "query", required: true, schema: { type: "string" } }], responses: { "200": { description: "Deleted" }, "400": { $ref: "#/components/responses/ValidationError" }, "404": { description: "Conversation not found" } } },
+    },
+    "/api/super-admin/actions": {
+      get: { tags: ["Super Admin"], summary: "List actions by status", parameters: [{ name: "status", in: "query", schema: { type: "string", enum: ["pending", "approved", "rejected", "executed", "failed"] } }], responses: { "200": { description: "Actions", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+      post: {
+        tags: ["Super Admin"],
+        summary: "Approve or reject a pending action (human-in-the-loop)",
+        description: "Approving an 'announce' action publishes the announcement to the owner's company. Other kinds are recorded as executed.",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { id: { type: "string" }, decision: { type: "string", enum: ["approve", "reject"] } }, required: ["id", "decision"] } } } },
+        responses: { "200": { description: "Action decision applied", content: { "application/json": { schema: { type: "object" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "404": { description: "Action not found" }, "409": { description: "Action already decided" } },
+      },
+    },
+    "/api/super-admin/providers": {
+      get: { tags: ["Super Admin"], summary: "Full omni-router status and free-tier catalog", responses: { "200": { description: "Router + catalog", content: { "application/json": { schema: { $ref: "#/components/schemas/OmniProvidersResponse" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+      post: {
+        tags: ["Super Admin"],
+        summary: "Pin (or clear) the preferred provider",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { providerId: { type: ["string", "null"], description: "Callable provider id, or null for chain order." } } } } } },
+        responses: { "200": { description: "Updated router status" }, "400": { description: "Unknown provider" }, "401": { $ref: "#/components/responses/Unauthorized" } },
+      },
+    },
+    "/api/super-admin/self-heal": {
+      get: { tags: ["Super Admin"], summary: "Open findings, fix registry, and learned patterns", responses: { "200": { description: "Self-healing state", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+      post: {
+        tags: ["Super Admin"],
+        summary: "Run a self-heal scan, apply safe fixes, or apply one named safe fix",
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { mode: { type: "string", enum: ["scan", "fix", "apply-fix"] }, fixId: { type: "string" }, url: { type: "string" }, scanWeb: { type: "boolean" } }, required: ["mode"] } } } },
+        responses: { "200": { description: "Scan/fix result" }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" } },
+      },
+    },
+    "/api/super-admin/health": {
+      get: { tags: ["Super Admin"], summary: "Consolidated system health for the dashboard header", responses: { "200": { description: "Health", content: { "application/json": { schema: { type: "object" } } } }, "401": { $ref: "#/components/responses/Unauthorized" } } },
+    },
   },
   components: {
     securitySchemes: {
+      BearerJWT: {
+        type: "http",
+        scheme: "bearer",
+        bearerFormat: "JWT",
+        description: "MarketingOS tenant JWT in the Authorization header (Authorization: Bearer <token>), or the mos_token cookie for browser sessions.",
+      },
       AdminSession: {
         type: "apiKey",
         in: "cookie",
@@ -395,6 +553,59 @@ export const openApiSpec = {
           lead: { type: "object", properties: { id: { type: "string" }, fullName: { type: "string" }, email: { type: ["string", "null"], format: "email", maxLength: 191 }, phone: { type: ["string", "null"] }, company: { $ref: "#/components/schemas/CompanySummary" } }, required: ["id", "fullName", "email", "phone", "company"] },
         },
         required: ["id", "leadId", "number", "title", "currency", "status", "subtotal", "discountAmount", "taxRate", "taxAmount", "total", "validUntil", "terms", "notes", "acceptedAt", "createdAt", "updatedAt", "items"],
+      },
+      OmniChatResponse: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            properties: {
+              reply: { type: "string" },
+              provider: { type: "string", description: "Provider that actually served the answer (e.g. local-ollama, groq)." },
+              model: { type: "string" },
+              latencyMs: { type: "integer" },
+            },
+            required: ["reply", "provider", "model", "latencyMs"],
+          },
+        },
+        required: ["ok", "data"],
+      },
+      OmniProvidersResponse: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            properties: {
+              singleActive: { type: "boolean", const: true, description: "At most one provider is ever called at a time." },
+              externalInFlight: { type: "boolean" },
+              preferredProvider: { type: ["string", "null"] },
+              chainOrder: { type: "array", items: { type: "string" } },
+              external: { type: "object", properties: { enabled: { type: "boolean" }, configured: { type: "boolean" }, order: { type: "array", items: { type: "string" } }, providers: { type: "array", items: { type: "object" } } }, required: ["enabled", "configured", "order"] },
+              local: { type: ["object", "null"] },
+              health: { type: "array", items: { type: "object", properties: { providerId: { type: "string" }, status: { type: "string" }, consecutiveFailures: { type: "integer" } } } },
+              cooldowns: { type: "array", items: { type: "object" } },
+              catalogSummary: { type: "object" },
+            },
+            required: ["singleActive", "chainOrder", "external"],
+          },
+        },
+        required: ["ok", "data"],
+      },
+      SuperAdminChatTurn: {
+        type: "object",
+        properties: {
+          ok: { type: "boolean" },
+          reply: { type: "string", description: "Assistant reply (markdown)." },
+          provider: { type: "string", description: "'executor' for system commands, the omni-router provider for chat, or 'unavailable' when nothing answered." },
+          degraded: { type: "boolean" },
+          intent: { type: "string", enum: ["health_check", "scan_errors", "fix_errors", "switch_provider", "announce", "analytics", "backup", "chat"] },
+          execution: { type: ["object", "null"], description: "Per-step execution result for system commands." },
+          pendingActionId: { type: ["string", "null"], description: "Set when the turn is paused awaiting owner approval." },
+          runId: { type: "string", description: "Persistent run id — fetch the durable timeline at /api/super-admin/runs/{runId}." },
+        },
+        required: ["ok", "reply", "provider", "intent", "runId"],
       },
     },
   },
