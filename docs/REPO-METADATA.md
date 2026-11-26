@@ -12,6 +12,12 @@ node scripts/apply-repo-metadata.mjs --dry-run     # print the plan, no API call
 GH_TOKEN=... node scripts/apply-repo-metadata.mjs  # apply
 ```
 
+> **Write access note:** the automation token used here is read-only for this
+> endpoint — `PUT /repos/{owner}/{repo}/topics` returns
+> `403 Resource not accessible by integration`. Topics and description must
+> therefore be applied from a session whose token has `administration` on the
+> repository (the owner's own terminal or the GitHub UI, Settings → General).
+
 The script merges with any topics that already exist (GitHub allows 20), so
 running it never silently drops something set elsewhere.
 
