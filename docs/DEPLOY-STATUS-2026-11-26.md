@@ -135,3 +135,65 @@ gh secret set TAILSCALE_AUTH_KEY
 > পুরোনো বাগ: action-টি `invalid key` লগ করে **তবুও success** দেখিয়ে SSH ধাপে
 > চলে যেত। এখন `Assert tailnet membership` ধাপ যোগ করা হয়েছে — tailnet-এ না
 > ঢুকলে সাথে সাথে পরিষ্কার এরর দিয়ে থামবে।
+
+## ৯. চূড়ান্ত নির্ণয় (রান `45826673198`) — সমস্যাটা আপনার সিক্রেটের মানে
+
+```
+credential-in-use=oauth client pair
+oauth-client-id-length=17   oauth-secret-length=17   auth-key-length=0
+tailscaled.log-errors: ... Received error: invalid key: unable to validate API key
+```
+
+**`oauth-secret-length=17`** — Tailscale-এর আসল OAuth client secret কখনো ১৭
+অক্ষরের হয় না। আসল secret শুরু হয় `tskey-client-` দিয়ে এবং সাধারণত ৪০+
+অক্ষরের হয়। অর্থাৎ GitHub-এ যা বসানো আছে সেটি **প্লেসহোল্ডার/ভুল মান**
+(যেমন `your-client-secret`)। একইভাবে `client-id`-ও ১৭ অক্ষর — সাধারণত ছোট
+আইডি হয়, তবে secret-এর ১৭ অক্ষর প্রমাণ করে মানগুলো ঠিকভাবে কপি হয়নি।
+
+### ⚠️ এই কাজটি আমাকে না জানিয়ে করুন
+
+Secret-এর মান চ্যাটে **পাঠাবেন না** — শুধু নিজে বসান।
+
+#### পথ A (সহজতম): Auth key দিয়ে
+
+1. <https://login.tailscale.com/admin/settings/keys> → **Generate auth key**
+   - ✔ **Reusable** (বা Ephemeral)
+   - ✔ **Pre-approved**
+   - Tags: **`tag:github-runner`** নির্বাচন করুন
+   - Expiry: 90 দিন
+2. ব্রাউজারে আপনার নিজের টার্মিনালে:
+   ```bash
+   gh secret set TAILSCALE_AUTH_KEY
+   # প্রম্পটে key পেস্ট করুন (tskey-auth-... দিয়ে শুরু)
+   ```
+3. যাচাই — দৈর্ঘ্য ৪৫+ হওয়া উচিত:
+   ```bash
+   gh workflow run deploy.yml -f mode=preflight-only --ref main
+   gh run watch
+   ```
+   ডায়াগনস্টিকে `credential-in-use=plain auth key` আর
+   `auth-key-length=50+` দেখতে পাওয়া উচিত।
+
+#### পথ B: OAuth ঠিক করা
+
+1. <https://login.tailscale.com/admin/settings/oauth> → **Generate OAuth client**
+   - Scope: **`auth_keys` → Write**
+   - Tags: **`tag:github-runner`**
+2. Client secret পুরোটা কপি করুন (`tskey-client-…`), স্পেস/নিউলাইন ছাড়া:
+   ```bash
+   gh secret set TAILSCALE_OAUTH_CLIENT_ID
+   gh secret set TAILSCALE_OAUTH_SECRET
+   ```
+3. `tagOwners`-এ ট্যাগের মালিকানা নিশ্চিত করুন (Access controls → JSON):
+   ```json
+   "tagOwners": { "tag:github-runner": ["autogroup:admin"] }
+   ```
+
+### তারপর যা বাকি (আগেই বলা)
+
+```bash
+gh variable set VPS_PM2_APP --body "learn-aloeducation"   # এখন "learn" — ভুল
+SHA=$(gh api repos/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/commits/main --jq .sha)
+gh variable set VPS_RESTORE_TEST_SHA --body "$SHA"
+gh variable set VPS_SCHEMA_PREFLIGHT_SHA --body "$SHA"
+```
