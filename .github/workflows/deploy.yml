@@ -38,8 +38,8 @@ name: Deploy to VPS
 #            VPS_SSH_KEY, VPS_SSH_HOST_KEY, VPS_PORT (optional, default 22),
 #            TAILSCALE_OAUTH_CLIENT_ID, TAILSCALE_OAUTH_SECRET
 #   Variables: VPS_APP_DIR=/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION,
-#              VPS_PM2_APP=learn-aloeducation, VPS_APP_PORT=3061,
-#              DEPLOY_URL=https://learn.aloeducation.com, HEALTH_PATH=/api/health,
+#              VPS_PM2_APP=learn, VPS_APP_PORT=3061,
+#              DEPLOY_URL=https://learn.alolabs.net, HEALTH_PATH=/api/health,
 #              VPS_RESTORE_TEST_SHA + VPS_RESTORE_TEST_REFERENCE (only after an
 #              isolated restore rehearsal), VPS_SCHEMA_PREFLIGHT_SHA +
 #              VPS_SCHEMA_PREFLIGHT_REFERENCE (only after schema/history review),
@@ -353,9 +353,14 @@ jobs:
           # These values are operator-confirmed production configuration and
           # must stay exact; no host/path/service fallback is permitted.
           [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || { echo "::error::VPS_APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION."; exit 1; }
-          [ "$PM2_APP_NAME" = "learn-aloeducation" ] || { echo "::error::VPS_PM2_APP must be learn-aloeducation."; exit 1; }
+          [ "$PM2_APP_NAME" = "learn" ] || { echo "::error::VPS_PM2_APP must be learn (matches ecosystem.learn.config.cjs and the live PM2 process)."; exit 1; }
           [ "$APP_PORT" = "3061" ] || { echo "::error::VPS_APP_PORT must be 3061."; exit 1; }
-          [ "$DEPLOY_URL" = "https://learn.aloeducation.com" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          # Canonical production origin is learn.alolabs.net (Cloudflare Tunnel →
+          # 127.0.0.1:3061). Accept either scheme; normalise to https below.
+          case "$DEPLOY_URL" in
+            "https://learn.alolabs.net"|"http://learn.alolabs.net"|"https://learn.alolabs.net/"|"http://learn.alolabs.net/") ;;
+            *) echo "::error::DEPLOY_URL must be https://learn.alolabs.net (or http://learn.alolabs.net); got '$DEPLOY_URL'."; exit 1 ;;
+          esac
           [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
           [[ "$RESTORE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::VPS_RESTORE_TEST_SHA must be a 40-character lowercase commit SHA from an isolated restore rehearsal."; exit 1; }
           [[ "$RESTORE_TEST_REFERENCE" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || { echo "::error::VPS_RESTORE_TEST_REFERENCE must identify the restore rehearsal without spaces or secrets."; exit 1; }
@@ -368,9 +373,10 @@ jobs:
           # EXPECTED_SHA is the exact merged main commit of this run. Pending
           # migrations additionally require the independent, exact-SHA approval
           # variable documented in MIGRATION-RECOVERY-PLAN.md.
-          # Public release proof is never accepted over plaintext HTTP. Check
-          # TLS before the remote script can change the known-good release.
-          public_health="${DEPLOY_URL%/}$HEALTH_PATH"
+          # Public release proof is never accepted over plaintext HTTP: always
+          # check TLS before the remote script can change the known-good release.
+          origin="https://${DEPLOY_URL#*://}"; origin="${origin%/}"
+          public_health="${origin}${HEALTH_PATH}"
           code=$(curl --connect-timeout 10 --max-time 20 -sS -o /dev/null -w '%{http_code}' "$public_health")
           [ "$code" = 200 ] || { echo "::error::Existing HTTPS health endpoint must return 200 before deployment."; exit 1; }
           ssh -i ~/.ssh/deploy_key -p "${VPS_PORT:-22}" \
@@ -380,14 +386,20 @@ jobs:
             "VPS_DEPLOY_ENABLED='$VPS_DEPLOY_ENABLED' EXPECTED_SHA='${{ github.sha }}' APP_DIR='$APP_DIR' PM2_APP_NAME='$PM2_APP_NAME' APP_PORT='$APP_PORT' HEALTH_PATH='$HEALTH_PATH' RESTORE_TEST_SHA='$RESTORE_TEST_SHA' RESTORE_TEST_REFERENCE='$RESTORE_TEST_REFERENCE' SCHEMA_PREFLIGHT_SHA='$SCHEMA_PREFLIGHT_SHA' SCHEMA_PREFLIGHT_REFERENCE='$SCHEMA_PREFLIGHT_REFERENCE' MIGRATION_PLAN_APPROVED_SHA='$MIGRATION_PLAN_APPROVED_SHA' bash -s" \
             < scripts/deploy-production.sh
 
-      - name: Verify live site (public, via Nginx/HTTPS)
+      - name: Verify live site (public, via Cloudflare Tunnel / HTTPS)
         env:
           DEPLOY_URL: ${{ vars.DEPLOY_URL }}
           HEALTH_PATH: ${{ vars.HEALTH_PATH }}
         run: |
-          [ "$DEPLOY_URL" = "https://learn.aloeducation.com" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          # Canonical production origin is learn.alolabs.net (Cloudflare Tunnel →
+          # 127.0.0.1:3061). Accept either scheme; normalise to https below.
+          case "$DEPLOY_URL" in
+            "https://learn.alolabs.net"|"http://learn.alolabs.net"|"https://learn.alolabs.net/"|"http://learn.alolabs.net/") ;;
+            *) echo "::error::DEPLOY_URL must be https://learn.alolabs.net (or http://learn.alolabs.net); got '$DEPLOY_URL'."; exit 1 ;;
+          esac
           [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
-          base="${DEPLOY_URL%/}"
+          # Accept http:// or https:// in DEPLOY_URL; the strict check is always TLS.
+          base="https://${DEPLOY_URL#*://}"; base="${base%/}"
           echo "Strict public health check: $base"
           health_file="$(mktemp)"
           trap 'rm -f "$health_file"' EXIT

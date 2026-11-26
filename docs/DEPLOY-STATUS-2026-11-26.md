@@ -62,7 +62,7 @@ gh workflow run deploy.yml -f mode=preflight-only --ref main
 gh run watch
 
 # ২) PM2 নাম সংশোধন (আপনার এখনকার মান ভুল: "learn")
-gh variable set VPS_PM2_APP --body "learn-aloeducation"
+gh variable set VPS_PM2_APP --body "learn"
 
 # ৩) রিলিজ SHA রিফ্রেশ (এখন main = 1e6f0c9, আপনার ভ্যারিয়েবলে পুরোনো 285ae78)
 SHA=$(gh api repos/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/commits/main --jq .sha)
@@ -192,8 +192,44 @@ Secret-এর মান চ্যাটে **পাঠাবেন না** — 
 ### তারপর যা বাকি (আগেই বলা)
 
 ```bash
-gh variable set VPS_PM2_APP --body "learn-aloeducation"   # এখন "learn" — ভুল
+gh variable set VPS_PM2_APP --body "learn"   # লাইভ PM2 নাম
 SHA=$(gh api repos/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/commits/main --jq .sha)
 gh variable set VPS_RESTORE_TEST_SHA --body "$SHA"
 gh variable set VPS_SCHEMA_PREFLIGHT_SHA --body "$SHA"
 ```
+
+## ১০. সংশোধন (২০২৬-১১-২৬, অপারেটরের যাচাইকৃত সার্ভার তথ্য)
+
+অপারেটর লাইভ সার্ভার (`alo-server-lap`, Tailscale `100.94.234.101`) যাচাই করে
+দুটি ভুল ধরেছেন, দুটোই ঠিক করা হয়েছে:
+
+| আগে (ভুল) | এখন (সঠিক) |
+|---|---|
+| `VPS_PM2_APP=learn-aloeducation` | **`learn`** — লাইভ PM2 `id:39`, `ecosystem.learn.config.cjs`-এর সাথে মিলে |
+| `DEPLOY_URL=https://learn.aloeducation.com` | **`https://learn.alolabs.net`** — সার্ভারের `.env` (`NEXTAUTH_URL`, `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SITE_URL`) ও Cloudflare Tunnel দিয়ে `127.0.0.1:3061` |
+
+`learn.aloeducation.com` এই সার্ভারে সক্রিয় নয় (`HTTP 000`), তাই সেটি আর
+কখনো দাবি করা হয় না — তবে `http://learn.alolabs.net` ও
+`https://learn.alolabs.net` দুটোই গ্রহণযোগ্য, আর পাবলিক স্বাস্থ্য-চেক সবসময়
+TLS-এ (`https://`) হয়।
+
+### নতুন যুক্ত হওয়া গুরুত্বপূর্ণ লজিক
+
+PM2 প্রসেসের `cwd` হলো `$APP_DIR/.next/standalone` — যা রিলিজ-নির্দিষ্ট নয়।
+ডিপ্লয় স্ক্রিপ্ট এখন:
+
+1. `.next/static`, `public`, Prisma engine ও `.env` → `.next/standalone`-এ কপি করে
+2. **`$APP_DIR/.next/standalone` → `releases/<sha>/.next/standalone`** সিমলিংক
+   atomically সুইচ করে (rollback-এ আগের রিলিজে ফেরে)
+3. `RELEASE_SHA=<sha>` লেখে standalone `.env`-এ এবং `pm2 reload learn --update-env`-এ
+   export করে — যাতে `/api/health` ঠিক ওই SHA ফেরত দেয়
+4. কোনো `sudo` ব্যবহার করে না (আপনার সার্ভারে passwordless sudo বন্ধ)
+
+> **একবারের ম্যানুয়াল ধাপ:** এখন যদি `.next/standalone` আসল ডিরেক্টরি হয়
+> (সিমলিংক নয়), প্রথম ডিপ্লয় স্পষ্ট এরর দিয়ে থেমে যাবে। তখন সার্ভারে:
+> ```bash
+> cd /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION
+> mv .next/standalone .next/standalone.predeploy
+> ```
+> এরপর ডিপ্লয় চালালে স্ক্রিপ্ট নিজেই সিমলিংক বানাবে। (`.env` হারাবে না — শেয়ার্ড
+> `shared/.env` থেকে কপি হয়।)

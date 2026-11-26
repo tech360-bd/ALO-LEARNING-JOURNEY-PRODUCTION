@@ -12,11 +12,34 @@ const datadogWorkflow = await readFile(path.join(root, ".github/workflows/datado
 test("production deploy is pinned to the operator-provided path, PM2 name, and port", () => {
   assert.match(deployScript, /APP_DIR="\$\{APP_DIR:-\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION\}"/);
   assert.match(deployScript, /APP_DIR" = "\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION"/);
-  assert.match(deployScript, /PM2_APP_NAME" == "learn-aloeducation"/);
+  // The live process is named `learn` (id 39) and matches ecosystem.learn.config.cjs.
+  assert.match(deployScript, /PM2_APP_NAME="\$\{PM2_APP_NAME:-learn\}"/);
+  assert.match(deployScript, /PM2_APP_NAME" == "learn"/);
+  assert.doesNotMatch(deployScript, /learn-aloeducation/);
   assert.match(deployScript, /APP_PORT" == "3061"/);
   assert.match(workflow, /VPS_APP_DIR must be \/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION/);
-  assert.match(workflow, /VPS_PM2_APP must be learn-aloeducation/);
+  assert.match(workflow, /VPS_PM2_APP must be learn /);
   assert.match(workflow, /VPS_APP_PORT must be 3061/);
+});
+
+test("every deploy helper script targets the live process name and canonical domain", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const helpers = ["deploy/app-deploy.sh", "deploy/monitor.sh", "deploy/health-check.sh", "deploy/vps-bootstrap.sh", "deploy/backup.sh"];
+  for (const helper of helpers) {
+    const source = await readFile(path.join(root, helper), "utf8");
+    assert.doesNotMatch(source, /learn-aloeducation/, `${helper} still pins the retired PM2 name`);
+    assert.doesNotMatch(source, /app-deploy\.sh[\s\S]*3017/, `${helper} still pins port 3017`);
+    assert.doesNotMatch(source, /\/home\/aloedu\/LEARNING-JOURNEY/, `${helper} still pins the retired app path`);
+  }
+  for (const helper of ["deploy/app-deploy.sh", "deploy/monitor.sh", "deploy/health-check.sh", "deploy/vps-bootstrap.sh"]) {
+    const source = await readFile(path.join(root, helper), "utf8");
+    assert.match(source, /learn-aloeducation|PM2_APP_NAME:-learn|PM2 process name must be learn|PM2 app must be learn/, `${helper} must accept the live name`);
+  }
+  const health = await readFile(path.join(root, "deploy/health-check.sh"), "utf8");
+  const bootstrap = await readFile(path.join(root, "deploy/vps-bootstrap.sh"), "utf8");
+  assert.match(health, /PUBLIC_BASE_URL:-https:\/\/learn\.alolabs\.net/);
+  assert.match(bootstrap, /PUBLIC_BASE_URL:-https:\/\/learn\.alolabs\.net/);
+  assert.doesNotMatch(health, /PUBLIC_BASE_URL:-https:\/\/learn\.aloeducation\.com/);
 });
 
 test("both the workflow and direct script require the exact readiness switch", () => {
@@ -97,9 +120,10 @@ test("deployment verifies exact migration checksums and requires the baseline al
 test("public HTTPS health verification requires the exact released SHA", () => {
   assert.ok(workflow.includes('DEPLOY_URL: ${{ vars.DEPLOY_URL }}'));
   assert.ok(workflow.includes('HEALTH_PATH: ${{ vars.HEALTH_PATH }}'));
-  assert.ok(workflow.includes('[ "$DEPLOY_URL" = "https://learn.aloeducation.com" ]'));
+  assert.ok(workflow.includes('"https://learn.alolabs.net"|"http://learn.alolabs.net"'));
+  assert.ok(workflow.includes('base="https://${DEPLOY_URL#*://}"; base="${base%/}"'));
+  assert.doesNotMatch(workflow, /DEPLOY_URL" = "https:\/\/learn\.aloeducation\.com"/);
   assert.ok(workflow.includes('[ "$HEALTH_PATH" = "/api/health" ]'));
-  assert.ok(workflow.includes('base="${DEPLOY_URL%/}"'));
   assert.ok(workflow.includes('"$base$HEALTH_PATH"'));
   assert.match(workflow, /served_sha.*\$\{\{ github\.sha \}\}/);
   assert.match(workflow, /Public health\/release verification failed/);

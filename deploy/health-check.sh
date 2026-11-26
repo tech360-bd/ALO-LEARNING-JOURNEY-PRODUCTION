@@ -5,13 +5,13 @@ cd /
 
 fail() { printf '[health] ERROR: %s\n' "$*" >&2; exit 1; }
 APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
-APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
+APP_NAME="${PM2_APP_NAME:-learn}"
 PORT="${APP_PORT:-3061}"
-DOMAIN="${PUBLIC_BASE_URL:-https://learn.aloeducation.com}"
+DOMAIN="${PUBLIC_BASE_URL:-https://learn.alolabs.net}"
 [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION"
-[ "$APP_NAME" = "learn-aloeducation" ] || fail "PM2 app must be learn-aloeducation"
+[ "$APP_NAME" = "learn" ] || fail "PM2 app must be learn"
 [ "$PORT" = "3061" ] || fail "application port must be 3061"
-case " https://learn.aloeducation.com https://learn.alolabs.net " in *" $DOMAIN "*) ;; *) fail "public URL must be one of: https://learn.aloeducation.com https://learn.alolabs.net";; esac
+case " https://learn.alolabs.net https://learn.aloeducation.com " in *" $DOMAIN "*) ;; *) fail "public URL must be one of: https://learn.alolabs.net https://learn.aloeducation.com";; esac
 for cmd in pm2 node curl ss; do command -v "$cmd" >/dev/null || fail "$cmd is not installed"; done
 
 if ! pm2 jlist 2>/dev/null | node -e '

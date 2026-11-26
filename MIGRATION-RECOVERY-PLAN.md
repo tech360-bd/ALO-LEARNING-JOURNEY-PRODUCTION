@@ -6,9 +6,9 @@ any backup are unverified. Do not run a migration, `migrate resolve`, schema
 repair, or production write based only on this document.
 
 Operator-provided (not independently verified) configuration: MySQL schema
-`db_learn` at `127.0.0.1:3306`; app root `/home/aloedu/LEARNING-JOURNEY`;
-PM2 process `learn-aloeducation`; port `3017`; public domain
-`learn.aloeducation.com`. The operator reported 22 existing model tables, a
+`db_learn` at `127.0.0.1:3306`; app root `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`;
+PM2 process `learn`; port `3061`; public domain `learn.alolabs.net`
+(Cloudflare Tunnel). The operator reported 22 existing model tables, a
 32-model legacy application expectation, an empty PM2 process list, and VPS
 capacity of 6.5 GiB RAM / 370 GB disk. None of these facts has been checked on
 the VPS from this workspace.

@@ -13,7 +13,7 @@ APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTIO
 [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must equal the operator-verified /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION path"
 [ -d "$APP_DIR" ] || fail "verified APP_DIR does not exist; no deployment changes made"
 
-PM2_APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
+PM2_APP_NAME="${PM2_APP_NAME:-learn}"
 APP_PORT="${APP_PORT:-3061}"
 HEALTH_PATH="${HEALTH_PATH:-/api/health}"
 [ "$HEALTH_PATH" = /api/health ] || fail "unexpected health path"
@@ -29,8 +29,13 @@ SHARED_DIR="$APP_DIR/shared"
 CURRENT_LINK="$APP_DIR/current"
 REPO_DIR="$APP_DIR/repo"
 BACKUP_DIR="$SHARED_DIR/.backups"
+# The live PM2 process runs with cwd=$APP_DIR/.next/standalone and script
+# server.js (ecosystem.learn.config.cjs). That path is stable across releases, so
+# the standalone tree is published through a symlink to the current release;
+# without this every reload would keep serving the previously built code.
+STANDALONE_DIR="$APP_DIR/.next/standalone"
 
-[[ "$PM2_APP_NAME" == "learn-aloeducation" ]] || fail "PM2_APP_NAME must equal the verified learn-aloeducation process name"
+[[ "$PM2_APP_NAME" == "learn" ]] || fail "PM2_APP_NAME must equal the verified live process name 'learn' (ecosystem.learn.config.cjs)"
 [[ "$APP_PORT" == "3061" ]] || fail "APP_PORT must equal the verified port 3061"
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "EXPECTED_SHA must be a full lowercase commit SHA"
 [ "$RESTORE_TEST_SHA" = "$EXPECTED_SHA" ] || fail "RESTORE_TEST_SHA must match the exact release after an isolated production-backup restore rehearsal"
@@ -45,6 +50,11 @@ done
 [ -f "$SHARED_DIR/.env" ] || fail "shared environment file missing at $SHARED_DIR/.env; no change made"
 [ -L "$CURRENT_LINK" ] || fail "current release symlink missing; this deploy path does not bootstrap or start a first PM2 process"
 [ ! -e "$CURRENT_LINK.tmp" ] && [ ! -L "$CURRENT_LINK.tmp" ] || fail "stale current.tmp path exists; inspect manually before deployment"
+[ ! -L "$STANDALONE_DIR" ] || { [ -d "$STANDALONE_DIR" ] || fail "standalone release symlink is broken; inspect before deploying"; }
+if [ -e "$APP_DIR/.next" ] && [ ! -L "$STANDALONE_DIR" ]; then
+  fail "$STANDALONE_DIR is a real directory, but the PM2 process must be pinned to the release symlink. Move it aside once (mv .next/standalone .next/standalone.predeploy) and re-run; no change was made"
+fi
+[ ! -e "$APP_DIR/.next.tmp" ] && [ ! -L "$APP_DIR/.next.tmp" ] || fail "stale .next.tmp path exists; inspect manually"
 
 exec 9>"/tmp/${PM2_APP_NAME}-deploy.lock"
 flock -n 9 || fail "another deployment is running"
@@ -101,6 +111,8 @@ log "building exact SHA $EXPECTED_SHA; current known-good release is $PREV_SHA"
 mkdir "$RELEASE_DIR"
 git -C "$REPO_DIR" archive "$EXPECTED_SHA" | tar -x -C "$RELEASE_DIR" || fail "could not materialize the exact release"
 printf '%s\n' "$EXPECTED_SHA" > "$RELEASE_DIR/RELEASE_SHA"
+# Convenience only: the PM2 process loads .env from the standalone directory,
+# which sync_standalone() populates below.
 ln -s "$SHARED_DIR/.env" "$RELEASE_DIR/.env"
 
 preserve_tree_no_clobber() {
@@ -181,6 +193,62 @@ npm ci || fail "dependency install failed; known-good release remains current"
 npx prisma generate || fail "Prisma client generation failed; known-good release remains current"
 npm run build || fail "production build failed before backup/migration; known-good release remains current"
 [ -f .next/standalone/server.js ] || fail "standalone production server was not built"
+
+# The live PM2 process runs with cwd=$APP_DIR/.next/standalone and script
+# server.js, so the standalone tree must be complete before the reload: Next.js
+# does not copy static assets or the public directory, and the Prisma engine has
+# to be resolvable from the standalone node_modules.
+sync_standalone() {
+  local standalone="$RELEASE_DIR/.next/standalone"
+  [ -d "$RELEASE_DIR/.next/static" ] || fail "next build did not produce .next/static"
+  [ -d "$RELEASE_DIR/public" ] || fail "release public directory is missing before standalone sync"
+  mkdir -p "$standalone/.next" || fail "cannot create standalone .next directory"
+  rm -rf "$standalone/.next/static" "$standalone/public" || fail "cannot reset previous standalone assets"
+  cp -R "$RELEASE_DIR/.next/static" "$standalone/.next/static" || fail "cannot copy .next/static into standalone"
+  cp -R "$RELEASE_DIR/public" "$standalone/public" || fail "cannot copy public into standalone"
+  # Prisma query engine (rhel-openssl-3.0.x / debian build target) next to the
+  # generated client so the standalone server can load it at runtime.
+  local engine_count=0
+  for engine in "$RELEASE_DIR"/node_modules/.prisma/client/*.node "$RELEASE_DIR"/node_modules/@prisma/client/*.node; do
+    [ -f "$engine" ] || continue
+    mkdir -p "$standalone/node_modules/.prisma/client" "$standalone/node_modules/@prisma/client" \
+      || fail "cannot create standalone Prisma directories"
+    cp "$engine" "$standalone/node_modules/.prisma/client/" || fail "cannot copy Prisma engine into standalone"
+    cp "$engine" "$standalone/node_modules/@prisma/client/" || fail "cannot copy Prisma engine for @prisma/client"
+    engine_count=$((engine_count + 1))
+  done
+  [ "$engine_count" -gt 0 ] || fail "no Prisma query engine was generated; standalone server would fail at runtime"
+  # The live process reads its environment from the standalone directory's .env.
+  [ -f "$standalone/.env" ] || cp "$SHARED_DIR/.env" "$standalone/.env" || fail "cannot place shared .env in standalone"
+  log "standalone assets synced (static, public, $engine_count Prisma engine file(s), .env)"
+}
+sync_standalone
+
+# Release proof: /api/health echoes process.env.RELEASE_SHA. Two places must
+# carry the exact release SHA — the standalone .env (loaded by server.js) and the
+# PM2 environment exported for `pm2 reload --update-env`.
+set_release_sha() {
+  node - "$1" "$EXPECTED_SHA" <<'NODE'
+const fs = require("fs");
+const [file, sha] = process.argv.slice(2);
+const line = `RELEASE_SHA=${sha}`;
+const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+const kept = text.split(/\r?\n/).filter((entry) => entry && !/^\s*(?:export\s+)?RELEASE_SHA\s*=/.test(entry));
+kept.push(line);
+fs.writeFileSync(file, kept.join("\n") + "\n", { mode: 0o600 });
+fs.chmodSync(file, 0o600);
+NODE
+}
+# The shared .env belongs to the operator: never silently rewrite a value there.
+if grep -qE '^\s*(?:export\s+)?RELEASE_SHA\s*=' "$SHARED_DIR/.env" 2>/dev/null; then
+  grep -E '^\s*(?:export\s+)?RELEASE_SHA\s*=' "$SHARED_DIR/.env" | grep -qx "RELEASE_SHA=$EXPECTED_SHA" \
+    || log "note: shared .env carries a different RELEASE_SHA; the standalone .env and PM2 env are authoritative"
+fi
+set_release_sha "$RELEASE_DIR/.next/standalone/.env" || fail "cannot write RELEASE_SHA into the standalone .env"
+printf '%s\n' "$EXPECTED_SHA" > "$RELEASE_DIR/RELEASE_SHA" || fail "cannot write release SHA proof"
+[ "$(node -p "require('fs').readFileSync('$RELEASE_DIR/.next/standalone/.env','utf8').includes('RELEASE_SHA=$EXPECTED_SHA')")" = "true" ] \
+  || fail "standalone .env does not carry the expected RELEASE_SHA"
+log "RELEASE_SHA=$EXPECTED_SHA written for the standalone process and the release marker"
 
 # Read DATABASE_URL from the private shared .env file without printing it.
 TS="$(date -u +%Y%m%d-%H%M%S)"
@@ -339,11 +407,23 @@ CURRENT_TMP="$APP_DIR/current.${EXPECTED_SHA}.tmp"
 ln -s "$RELEASE_DIR" "$CURRENT_TMP"
 mv -Tf "$CURRENT_TMP" "$CURRENT_LINK"
 
+# Publish the built standalone tree at the stable path the PM2 process uses, then
+# prove the process really resolves into this release before restarting it.
+if [ ! -e "$APP_DIR/.next" ]; then mkdir -p "$APP_DIR/.next" || fail "cannot create $APP_DIR/.next"; fi
+ln -sfn "$RELEASE_DIR/.next/standalone" "$APP_DIR/.next.tmp" || fail "cannot stage the standalone release link"
+mv -Tf "$APP_DIR/.next.tmp" "$STANDALONE_DIR" || fail "cannot publish the standalone release link"
+RESOLVED_STANDALONE="$(readlink -f "$STANDALONE_DIR" 2>/dev/null || true)"
+[ "$RESOLVED_STANDALONE" = "$(readlink -f "$RELEASE_DIR/.next/standalone")" ] \
+  || fail "standalone link does not resolve into the new release; not restarting PM2"
+log "standalone release link published: $STANDALONE_DIR -> $RELEASE_DIR/.next/standalone"
+
 rollback() {
   log "restoring current -> previously healthy release $PREV_SHA; database is not reverted"
   local tmp="$APP_DIR/current.rollback.tmp"
   [ ! -e "$tmp" ] && [ ! -L "$tmp" ] || { printf '[deploy] ERROR: rollback temp link exists; manual recovery required\n' >&2; return 1; }
   ln -s "$PREV_TARGET" "$tmp" && mv -Tf "$tmp" "$CURRENT_LINK" || return 1
+  ln -sfn "$PREV_TARGET/.next/standalone" "$APP_DIR/.next.tmp" && mv -Tf "$APP_DIR/.next.tmp" "$STANDALONE_DIR" \
+    || { printf '[deploy] ERROR: could not repoint the standalone link to %s\n' "$PREV_SHA" >&2; return 1; }
   pm2_process_is_online || { printf '[deploy] ERROR: PM2 process disappeared; automatic restart is disabled\n' >&2; return 1; }
   RELEASE_SHA="$PREV_SHA" pm2 reload "$PM2_APP_NAME" --update-env || return 1
   pm2 save || return 1
