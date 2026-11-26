@@ -14,8 +14,19 @@
 //   omniroute  first-class: an OmniRoute server you run yourself
 //              (default http://127.0.0.1:20128/v1, model "auto")
 //   custom     any OpenAI-compatible gateway declared in
-//              ALO_CUSTOM_AI_PROVIDERS_JSON (LiteLLM, 9router, a second
-//              OmniRoute, LM Studio, vLLM, …) — see parseCustomAiProviders.
+//              ALO_CUSTOM_AI_PROVIDERS_JSON (9router, a second OmniRoute,
+//              LM Studio, vLLM, LiteLLM, LibreChat, …) — see
+//              parseCustomAiProviders.
+//   litellm    a named alias for a self-hosted LiteLLM proxy
+//              (LITELLM_BASE_URL / LITELLM_API_KEY / LITELLM_MODEL)
+//   librechat  a named alias for a self-hosted LibreChat instance exposing an
+//              OpenAI-compatible endpoint
+//              (LIBRECHAT_BASE_URL / LIBRECHAT_API_KEY / LIBRECHAT_MODEL)
+//
+// The two aliases exist because those services are OpenAI-compatible *servers*,
+// not libraries: they are never vendored into this app, only called over HTTP
+// on the owner's own machine. Their model name is mandatory — this code will
+// not invent one, because a wrong model id is a paid or missing model.
 //
 // Gateways are powerful and dangerous in equal measure: OmniRoute/custom
 // gateways route onward to whatever their operator configured, so this code
@@ -46,6 +57,8 @@ type ProviderConfig = {
   defaultModel: string;
   /** Free-model guard for free-tier providers; gateways are owner-trusted. */
   isFreeModel: (model: string) => boolean;
+  /** Gateway aliases have no safe default model: the operator must name one. */
+  requiresModel?: boolean;
 };
 
 // Model names: provider/model:variant, ~aliases, -free suffixes, "auto".
@@ -53,11 +66,44 @@ const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._\-/:~]{0,119}$/;
 const CUSTOM_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-const BUILTIN_IDS = ["groq", "llm7", "opencode", "openrouter", "omniroute"];
+const BUILTIN_IDS = ["groq", "llm7", "opencode", "openrouter", "omniroute", "litellm", "librechat"];
+
+/**
+ * Self-hosted OpenAI-compatible gateways with a fixed, documented shape. Each is
+ * an owner-gateway (see the file header): env-only, behind both owner switches,
+ * and never given personal data. `LITELLM_*` defaults to LiteLLM's own proxy
+ * port; LibreChat has no default base URL because its API port is deployment
+ * specific, so it stays disabled until the operator names it.
+ */
+const GATEWAY_ALIASES: ReadonlyArray<{
+  id: string;
+  displayName: string;
+  baseEnv: string;
+  defaultBase: string;
+  apiKeyEnv: string;
+  modelEnv: string;
+}> = [
+  {
+    id: "litellm",
+    displayName: "LiteLLM proxy (self-hosted)",
+    baseEnv: "LITELLM_BASE_URL",
+    defaultBase: "http://127.0.0.1:4000/v1",
+    apiKeyEnv: "LITELLM_API_KEY",
+    modelEnv: "LITELLM_MODEL",
+  },
+  {
+    id: "librechat",
+    displayName: "LibreChat (self-hosted)",
+    baseEnv: "LIBRECHAT_BASE_URL",
+    defaultBase: "",
+    apiKeyEnv: "LIBRECHAT_API_KEY",
+    modelEnv: "LIBRECHAT_MODEL",
+  },
+];
 
 // Default chain: direct free providers first (generous quotas first,
 // scarcest last), then the owner's gateway if one is configured.
-const DEFAULT_ORDER = ["groq", "llm7", "opencode", "openrouter", "omniroute"];
+const DEFAULT_ORDER = ["groq", "llm7", "opencode", "openrouter", "omniroute", "litellm", "librechat"];
 
 // Prompt ceiling for external calls: bounds cost and accidental bulk data
 // exfiltration. Local Ollama calls are not subject to this limit.
@@ -140,7 +186,28 @@ function builtinProviders(): ProviderConfig[] {
       apiKeyEnv: "OMNIROUTE_API_KEY", modelEnv: "OMNIROUTE_MODEL", defaultModel: "auto",
       isFreeModel: () => true, // owner-trusted: OmniRoute routes per its own config
     },
+    ...GATEWAY_ALIASES.map(aliasProvider),
   ];
+}
+
+function aliasProvider(alias: (typeof GATEWAY_ALIASES)[number]): ProviderConfig {
+  const rawBase = process.env[alias.baseEnv]?.trim() || alias.defaultBase;
+  const endpoint = rawBase ? resolveGatewayEndpoint(rawBase) : null;
+  return {
+    id: alias.id,
+    displayName: alias.displayName,
+    kind: "owner-gateway",
+    endpoint,
+    // No base URL at all is "not configured yet", not a broken value: the
+    // status differentiates the two so a blank LITELLM_BASE_URL (default) is
+    // reported as missing_api_key rather than invalid_endpoint.
+    endpointInvalid: rawBase.length > 0 && endpoint === null,
+    apiKeyEnv: alias.apiKeyEnv,
+    modelEnv: alias.modelEnv,
+    defaultModel: "",
+    requiresModel: true,
+    isFreeModel: () => true, // owner-trusted: the gateway routes per its config
+  };
 }
 
 /**
@@ -235,7 +302,14 @@ export type ExternalProviderStatus = {
   /** API key present, model valid/free (free-tier), and endpoint valid. */
   configured: boolean;
   model: string;
-  reason: "ready" | "disabled" | "missing_api_key" | "invalid_model" | "non_free_model" | "invalid_endpoint";
+  reason:
+    | "ready"
+    | "disabled"
+    | "missing_api_key"
+    | "missing_model"
+    | "invalid_model"
+    | "non_free_model"
+    | "invalid_endpoint";
 };
 
 export type ExternalAiStatus = {
@@ -257,17 +331,16 @@ function configuredModel(cfg: ProviderConfig): string {
 function providerStatus(cfg: ProviderConfig, enabled: boolean): ExternalProviderStatus {
   const model = configuredModel(cfg);
   const hasKey = Boolean(process.env[cfg.apiKeyEnv]?.trim());
-  const reason: ExternalProviderStatus["reason"] = !enabled
-    ? "disabled"
-    : cfg.endpointInvalid
-      ? "invalid_endpoint"
-      : !hasKey
-        ? "missing_api_key"
-        : !MODEL_PATTERN.test(model)
-          ? "invalid_model"
-          : cfg.kind === "free-tier" && !cfg.isFreeModel(model)
-            ? "non_free_model"
-            : "ready";
+  // Ordered cheapest-to-diagnose first: a disabled switch explains every other
+  // field, then a bad URL, then a missing key, then the model.
+  let reason: ExternalProviderStatus["reason"];
+  if (!enabled) reason = "disabled";
+  else if (cfg.endpointInvalid) reason = "invalid_endpoint";
+  else if (!hasKey) reason = "missing_api_key";
+  else if (cfg.requiresModel && !model) reason = "missing_model";
+  else if (!MODEL_PATTERN.test(model)) reason = "invalid_model";
+  else if (cfg.kind === "free-tier" && !cfg.isFreeModel(model)) reason = "non_free_model";
+  else reason = "ready";
   return { provider: cfg.id, kind: cfg.kind, configured: reason === "ready", model, reason };
 }
 

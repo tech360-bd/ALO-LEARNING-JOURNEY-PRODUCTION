@@ -17,6 +17,8 @@ const ENV_NAMES = [
   "LLM7_API_KEY", "LLM7_MODEL",
   "OPENCODE_API_KEY", "OPENCODE_MODEL",
   "OMNIROUTE_API_KEY", "OMNIROUTE_MODEL", "OMNIROUTE_BASE_URL",
+  "LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_MODEL",
+  "LIBRECHAT_BASE_URL", "LIBRECHAT_API_KEY", "LIBRECHAT_MODEL",
   "ALO_CUSTOM_AI_PROVIDERS_JSON",
 ];
 
@@ -59,7 +61,9 @@ test("external AI is disabled by default and never calls fetch", async () => {
     const status = getExternalAiStatus();
     assert.equal(status.enabled, false);
     assert.equal(status.configured, false);
-    assert.deepEqual(status.order, ["groq", "llm7", "opencode", "openrouter", "omniroute"]);
+    assert.deepEqual(status.order, [
+      "groq", "llm7", "opencode", "openrouter", "omniroute", "litellm", "librechat",
+    ]);
     assert.ok(status.providers.every((p) => p.reason === "disabled"));
     assert.equal(status.dataPolicy, "non-personal-content-drafts-only");
 
@@ -267,12 +271,18 @@ test("status lists every provider and never exposes any API key", async () => {
     GROQ_API_KEY: "groq-secret", LLM7_API_KEY: "llm7-secret",
     OPENCODE_API_KEY: "zen-secret", OPENROUTER_API_KEY: "or-secret",
     OMNIROUTE_API_KEY: "omni-secret",
+    LITELLM_API_KEY: "litellm-secret", LITELLM_MODEL: "ollama/llama3.2",
+    LIBRECHAT_BASE_URL: "http://127.0.0.1:3080/api", LIBRECHAT_API_KEY: "lc-secret",
+    LIBRECHAT_MODEL: "llama3.2",
   }, async () => {
     const status = getExternalAiStatus();
     assert.equal(status.configured, true);
     assert.deepEqual(status.providers.map((p) => p.provider), status.order);
     assert.ok(status.providers.every((p) => p.reason === "ready"));
-    assert.doesNotMatch(JSON.stringify(status), /groq-secret|llm7-secret|zen-secret|or-secret|omni-secret/);
+    assert.doesNotMatch(
+      JSON.stringify(status),
+      /groq-secret|llm7-secret|zen-secret|or-secret|omni-secret|litellm-secret|lc-secret/
+    );
   });
 });
 
@@ -362,7 +372,9 @@ test("custom providers: owner JSON adds a gateway that joins the chain in order"
   ]);
   await withEnv({ ...ENABLED, ALO_CUSTOM_AI_PROVIDERS_JSON: custom, MY_LITELLM_KEY: "litellm-secret" }, async () => {
     const status = getExternalAiStatus();
-    assert.deepEqual(status.order, ["groq", "llm7", "opencode", "openrouter", "omniroute", "my-litellm"]);
+    assert.deepEqual(status.order, [
+      "groq", "llm7", "opencode", "openrouter", "omniroute", "litellm", "librechat", "my-litellm",
+    ]);
     const mine = providerOf(status, "my-litellm");
     assert.equal(mine.kind, "owner-gateway");
     assert.equal(mine.reason, "ready");
@@ -412,4 +424,63 @@ test("custom provider parsing is fail-closed and never embeds literal keys", () 
   assert.deepEqual(parsed.map((p) => p.id), ["good"]);
   assert.equal(parsed[0].endpoint, "https://x.example.com/v1/chat/completions");
   assert.doesNotMatch(JSON.stringify(parsed), /literal-secret/);
+});
+
+test("self-hosted LiteLLM works as a named gateway without a hand-written JSON entry", async () => {
+  await withEnv(
+    {
+      ...ENABLED,
+      LITELLM_BASE_URL: "http://127.0.0.1:4000/v1",
+      LITELLM_API_KEY: "sk-local",
+      LITELLM_MODEL: "ollama/llama3.2",
+    },
+    async () => {
+      const status = getExternalAiStatus();
+      const litellm = providerOf(status, "litellm");
+      assert.equal(litellm.kind, "owner-gateway");
+      assert.equal(litellm.reason, "ready");
+      const stub = stubFetch(() => okChat("ollama/llama3.2"));
+      try {
+        const result = await generateExternalChatJson("Return ONLY JSON {}", "topic", 5000);
+        assert.equal(result.content, '{"topic":"x"}');
+        assert.equal(stub.calls.length, 1);
+        // Direct free providers are ordered first and have no key, so the chain
+        // must fall through to the gateway only after those are skipped. The
+        // posted body must carry the operator's model, never a guessed one.
+        const call = stub.calls[0];
+        assert.match(call.url, /^http:\/\/127\.0\.0\.1:4000\/v1\/chat\/completions$/);
+        assert.equal(JSON.parse(call.init.body).model, "ollama/llama3.2");
+      } finally { stub.restore(); }
+    }
+  );
+});
+
+test("a gateway alias without a model is missing_model, not a guessed model", async () => {
+  // LibreChat has no default base URL and no safe default model: publishing a
+  // wrong model id would silently route to a paid or nonexistent model.
+  await withEnv(
+    { ...ENABLED, LIBRECHAT_BASE_URL: "http://127.0.0.1:3080/api", LIBRECHAT_API_KEY: "k" },
+    async () => {
+      const lib = providerOf(getExternalAiStatus(), "librechat");
+      assert.equal(lib.reason, "missing_model");
+      assert.equal(lib.model, "");
+      assert.equal(lib.configured, false);
+    }
+  );
+  await withEnv({ ...ENABLED }, async () => {
+    // Unset base URL is "not configured", not "broken": the reason must stay
+    // missing_api_key so the operator knows to add the key first.
+    assert.equal(providerOf(getExternalAiStatus(), "litellm").reason, "missing_api_key");
+    assert.notEqual(providerOf(getExternalAiStatus(), "litellm").reason, "invalid_endpoint");
+  });
+});
+
+test("a public plain-http gateway is rejected, a private one is not", async () => {
+  await withEnv(
+    { ...ENABLED, LITELLM_BASE_URL: "http://llm.example.com/v1", LITELLM_API_KEY: "k", LITELLM_MODEL: "m1" },
+    async () => {
+      assert.equal(resolveGatewayEndpoint("http://llm.example.com/v1"), null);
+      assert.equal(providerOf(getExternalAiStatus(), "litellm").reason, "invalid_endpoint");
+    }
+  );
 });
