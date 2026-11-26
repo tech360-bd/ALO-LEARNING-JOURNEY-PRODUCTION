@@ -143,12 +143,15 @@ jobs:
         if: always()
         env:
           TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           # Job logs are not always downloadable, but check-run annotations always
           # are, so every fact is also emitted as an annotation.
           note() { echo "::notice title=Tailscale diag::$(printf '%s' "$1" | tr '\n' ' ' | head -c 900)"; }
           echo "### Tailscale diagnostics"
-          note "oauth-client-id-length=${#TS_CLIENT_ID}"
+          note "credential-in-use=$(if [ -n "$TS_AUTH_KEY" ]; then echo 'plain auth key (no OAuth scopes needed)'; elif [ -n "$TS_CLIENT_SECRET" ]; then echo 'oauth client pair'; else echo 'NONE — set TAILSCALE_AUTH_KEY or both OAuth secrets'; fi)"
+          note "oauth-client-id-length=${#TS_CLIENT_ID} oauth-secret-length=${#TS_CLIENT_SECRET} auth-key-length=${#TS_AUTH_KEY}"
           note "tailscale-binary=$(command -v tailscale || echo MISSING)"
           note "sudo-non-interactive=$(sudo -n true >/dev/null 2>&1 && echo yes || echo NO)"
           echo "- OAuth client id length: ${#TS_CLIENT_ID} (must be non-zero)"
@@ -157,7 +160,10 @@ jobs:
           echo "- tailscaled.log (last 40 lines):"
           log_tail="$(tail -n 40 "$HOME/tailscaled.log" 2>/dev/null || echo '(no log written)')"
           printf '%s\n' "$log_tail"
-          note "tailscaled.log: $(printf '%s' "$log_tail" | tail -n 12)"
+          # Lines are long; emit the decisive ones first, then chunk the rest so
+          # nothing is truncated mid-line by the 900-character annotation limit.
+          note "tailscaled.log-errors: $(printf '%s' "$log_tail" | grep -iE 'invalid key|unauthorized|denied|error|NeedsLogin|Logged out' | tail -n 4 | cut -c1-200)"
+          printf '%s' "$log_tail" | tail -n 3 | while IFS= read -r line; do note "tailscaled.log: $line"; done
           echo "- tailscale status:"
           st="$(timeout 20 sudo -n tailscale status 2>&1 | head -20 || echo '(not connected)')"
           printf '%s\n' "$st"
