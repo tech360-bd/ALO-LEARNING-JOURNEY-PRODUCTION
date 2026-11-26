@@ -167,12 +167,68 @@ gh pr merge <number> --auto --squash
 
 ---
 
-## ৬. দুটি অসঙ্গতি যা আগে ঠিক করা উচিত
+## ৬. পুরোনো পাথ/পোর্টের অসঙ্গতি — সমাধান হয়েছে
 
-1. `deploy/app-deploy.sh` ডিফল্ট হিসেবে `/home/aloedu/LEARNING-JOURNEY` ও পোর্ট
-   `3017` ধরে, কিন্তু `scripts/deploy-production.sh` কঠোরভাবে
-   `/home/alamin/alolabs-projects/...` ও `3061` দাবি করে। কোনটা সত্যি?
-2. `deploy/monitor.sh`-এও পুরোনো পাথ/পোর্ট আছে। একটি সত্যিকারের মান ঠিক করে
-   বাকিগুলো সেই অনুযায়ী আপডেট করা দরকার।
+`deploy/app-deploy.sh`, `monitor.sh`, `health-check.sh`, `backup.sh` ও
+`vps-bootstrap.sh` আগে পুরোনো `/home/aloedu/LEARNING-JOURNEY` ও পোর্ট `3017`
+ধরে রাখত। এখন সবগুলো `scripts/deploy-production.sh`-এর সাথে একই মান
+(`/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`, পোর্ট `3061`)
+ব্যবহার করে এবং `tests/deploy-script-safety.test.mjs` + `tests/release-claims.test.mjs`
+এটি পাহারা দেয়।
 
-দুটোই ছোট ফিক্স — আপনি সত্যিকারের পাথ/পোর্ট জানালে এক PR-এ ঠিক করে দেব।
+---
+
+## ৭. ২০২৬-১১-২৬: আপনার সেটআপের পর যা পাওয়া গেল
+
+### ✅ হয়েছে
+Secrets বসেছে (`SERVER_HOST`, `VPS_HOST`, `VPS_PORT`, `VPS_SSH_KEY`,
+`VPS_SSH_HOST_KEY`, `VPS_USER`, `TAILSCALE_OAUTH_CLIENT_ID/SECRET`) এবং
+`VPS_DEPLOY_ENABLED=true`।
+
+### ❌ এখনো যে ৪টি কারণে ডিপ্লয় হবে না
+
+| # | সমস্যা | প্রমাণ | সমাধান |
+|---|---|---|---|
+| ১ | `Tailscale connect` ফেল | রান `45819078562` → `sudo failed with exit code 1` (৫ বার retry) | OAuth ক্লায়েন্টে `auth_keys:write` scope ও `tag:github-runner` ট্যাগ নেই, অথবা Tailscale ACL-এ `tag:github-runner → আপনার সার্ভার:22` নিয়ম নেই |
+| ২ | `VPS_SSH_HOST_KEY` সম্ভবত ভুল ফরম্যাট | পরের ধাপেই ধরা পড়বে | `ssh-keyscan -t ed25519 <হোস্ট>` এর **পুরো লাইন** (`হোস্ট ssh-ed25519 AAAA...`) বসাতে হবে |
+| ৩ | `VPS_PM2_APP` = `learn` | আপনার ভ্যারিয়েবল তালিকা | **`learn-aloeducation`** করতে হবে (স্ক্রিপ্ট হুবহু মেলায়) |
+| ৪ | `VPS_RESTORE_TEST_SHA` / `VPS_SCHEMA_PREFLIGHT_SHA` পুরোনো | `285ae78…` (এখন `main` = `354e449…`) | প্রতিটি রিলিজের exact SHA বসাতে হবে, নাহলে স্ক্রিপ্ট থেমে যাবে |
+
+### 🔧 এই PR-এ যা ঠিক করা হয়েছে
+- `DEPLOY_URL` এখন `https://learn.aloeducation.com` (আপনার সেট করা মান) — আগে কোড `http://learn.alolabs.net` দাবি করত, তাই ডিপ্লয় কখনো শুরুই হতো না
+- pending-migration allowlist-এ নতুন `20261125000000_super_admin_omni_selfheal` যোগ (আগে থাকলে "unknown suffix" তে আটকে যেত)
+- `deploy/app-deploy.sh`, `monitor.sh`, `health-check.sh`, `backup.sh`, `vps-bootstrap.sh` — সব `/home/aloedu/LEARNING-JOURNEY:3017` থেকে `/home/alamin/alolabs-projects/...:3061`-এ একীভূত
+
+### এখনই রান করার কমান্ড
+
+```bash
+gh variable set VPS_PM2_APP --body learn-aloeducation
+```
+
+Tailscale ঠিক করার পর যাচাই:
+
+```bash
+gh workflow run deploy.yml -f mode=preflight-only --ref main
+gh run watch
+```
+
+`network-preflight` সবুজ হলে বুঝবেন নেটওয়ার্ক প্রস্তুত। তারপর:
+
+```bash
+# নতুন রিলিজের জন্য প্রতি রিলিজে
+SHA=$(gh api repos/tech360-bd/ALO-LEARNING-JOURNEY-PRODUCTION/commits/main --jq .sha)
+gh variable set VPS_RESTORE_TEST_SHA --body "$SHA"
+gh variable set VPS_SCHEMA_PREFLIGHT_SHA --body "$SHA"
+gh variable set VPS_RESTORE_TEST_REFERENCE --body "restore-$(date +%F)"
+gh variable set VPS_SCHEMA_PREFLIGHT_REFERENCE --body "schema-$(date +%F)"
+```
+
+### সার্ভারে প্রথমবার (একবারই, ম্যানুয়াল)
+
+স্ক্রিপ্ট ধরে নেয় PM2-তে অ্যাপ **আগে থেকেই চলছে** এবং `current` সিমলিংক আছে।
+না থাকলে deploy শুরুতেই থেমে যাবে। সার্ভারে চালান (আউটপুট আমাকে পাঠান):
+
+```bash
+cd /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION
+ls -la; ls -la shared/ 2>/dev/null; readlink -f current; pm2 list; ss -lntH | grep 3061; node -v
+```

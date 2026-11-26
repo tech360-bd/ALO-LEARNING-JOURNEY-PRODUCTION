@@ -19,8 +19,8 @@ const [monitor, seoView, avatarView, avatarRoute, briefRoute, aiSource, layout, 
 ].map((file) => readFile(path.join(root, file), "utf8")));
 
 test("monitor uses the reported MySQL app target and stays read-only", () => {
-  assert.match(monitor, /\/home\/aloedu\/LEARNING-JOURNEY/);
-  assert.match(monitor, /3017/);
+  assert.match(monitor, /\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION/);
+  assert.match(monitor, /3061/);
   assert.match(monitor, /learn-aloeducation/);
   assert.match(monitor, /pm2 jlist/);
   assert.match(monitor, /no restart attempted/);

@@ -39,7 +39,7 @@ name: Deploy to VPS
 #            TAILSCALE_OAUTH_CLIENT_ID, TAILSCALE_OAUTH_SECRET
 #   Variables: VPS_APP_DIR=/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION,
 #              VPS_PM2_APP=learn-aloeducation, VPS_APP_PORT=3061,
-#              DEPLOY_URL=http://learn.alolabs.net, HEALTH_PATH=/api/health,
+#              DEPLOY_URL=https://learn.aloeducation.com, HEALTH_PATH=/api/health,
 #              VPS_RESTORE_TEST_SHA + VPS_RESTORE_TEST_REFERENCE (only after an
 #              isolated restore rehearsal), VPS_SCHEMA_PREFLIGHT_SHA +
 #              VPS_SCHEMA_PREFLIGHT_REFERENCE (only after schema/history review),
@@ -290,7 +290,7 @@ jobs:
           [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || { echo "::error::VPS_APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION."; exit 1; }
           [ "$PM2_APP_NAME" = "learn-aloeducation" ] || { echo "::error::VPS_PM2_APP must be learn-aloeducation."; exit 1; }
           [ "$APP_PORT" = "3061" ] || { echo "::error::VPS_APP_PORT must be 3061."; exit 1; }
-          [ "$DEPLOY_URL" = "http://learn.alolabs.net" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          [ "$DEPLOY_URL" = "https://learn.aloeducation.com" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
           [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
           [[ "$RESTORE_TEST_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::VPS_RESTORE_TEST_SHA must be a 40-character lowercase commit SHA from an isolated restore rehearsal."; exit 1; }
           [[ "$RESTORE_TEST_REFERENCE" =~ ^[A-Za-z0-9._:-]{1,80}$ ]] || { echo "::error::VPS_RESTORE_TEST_REFERENCE must identify the restore rehearsal without spaces or secrets."; exit 1; }
@@ -305,7 +305,7 @@ jobs:
           # variable documented in MIGRATION-RECOVERY-PLAN.md.
           # Public release proof is never accepted over plaintext HTTP. Check
           # TLS before the remote script can change the known-good release.
-          public_health="https://${DEPLOY_URL#http://}$HEALTH_PATH"
+          public_health="${DEPLOY_URL%/}$HEALTH_PATH"
           code=$(curl --connect-timeout 10 --max-time 20 -sS -o /dev/null -w '%{http_code}' "$public_health")
           [ "$code" = 200 ] || { echo "::error::Existing HTTPS health endpoint must return 200 before deployment."; exit 1; }
           ssh -i ~/.ssh/deploy_key -p "${VPS_PORT:-22}" \
@@ -320,9 +320,9 @@ jobs:
           DEPLOY_URL: ${{ vars.DEPLOY_URL }}
           HEALTH_PATH: ${{ vars.HEALTH_PATH }}
         run: |
-          [ "$DEPLOY_URL" = "http://learn.alolabs.net" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
+          [ "$DEPLOY_URL" = "https://learn.aloeducation.com" ] || { echo "::error::Unexpected DEPLOY_URL"; exit 1; }
           [ "$HEALTH_PATH" = "/api/health" ] || { echo "::error::Unexpected HEALTH_PATH"; exit 1; }
-          base="https://${DEPLOY_URL#http://}"
+          base="${DEPLOY_URL%/}"
           echo "Strict public health check: $base"
           health_file="$(mktemp)"
           trap 'rm -f "$health_file"' EXIT
@@ -352,7 +352,7 @@ jobs:
           {
             echo "## Deploy job (exact merged SHA)"
             printf 'Candidate package version: `%s`\n' "$(jq -er '.version' package.json)"
-            echo 'Expected service: https://learn.alolabs.net (HTTPS 443) → PM2 on port 3061.'
+            echo "Expected service: ${{ vars.DEPLOY_URL }} (HTTPS 443) → PM2 on port 3061."
             echo "- Expected release SHA: \`${{ github.sha }}\`"
             echo "- Deploy job outcome: \`${{ job.status }}\`"
             echo "- Server release proof: \`current/RELEASE_SHA\` must equal the SHA above (deploy script enforces)."

@@ -7,8 +7,8 @@ cd /
 log()  { printf '[backup] %s\n' "$*"; }
 fail() { printf '[backup] ERROR: %s\n' "$*" >&2; exit 1; }
 
-APP_DIR="${APP_DIR:-/home/aloedu/LEARNING-JOURNEY}"
-[ "$APP_DIR" = "/home/aloedu/LEARNING-JOURNEY" ] || fail "APP_DIR must be /home/aloedu/LEARNING-JOURNEY"
+APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
+[ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION"
 [ -d "$APP_DIR" ] || fail "verified application directory is missing"
 BACKUP_DIR="${BACKUP_DIR:-$APP_DIR/shared/.backups}"
 case "$BACKUP_DIR" in "$APP_DIR"/*) ;; *) fail "BACKUP_DIR must be beneath APP_DIR" ;; esac
