@@ -1,0 +1,178 @@
+# অটো-ডিপ্লয় চালু করার গাইড (কী শেয়ার করবেন, কী করতে হবে)
+
+লক্ষ্য: **যেকোনো ফাইল/ফিচার প্রস্তাব করলাম → PR → merge → সাথে সাথে সার্ভারে লাইভ।**
+হাতে কিছু না। এই ডকুমেন্টে ঠিক কী বাকি আছে এবং আপনার কাছ থেকে কী তথ্য দরকার তা দেওয়া আছে।
+
+---
+
+## ১. এখন পাইপলাইন কোথায় দাঁড়িয়ে আছে
+
+```
+branch ──PR──▶ CI (validate + Secret scan)  ✅ পাস
+                    │
+                 merge to main
+                    ▼
+        Deploy to VPS workflow
+          ├─ verify (CI আবার)              ✅ পাস
+          ├─ network-preflight             ❌ Tailscale connect fail
+          └─ deploy                        ⏭ skipped (switch বন্ধ)
+```
+
+তিনটি আলাদা কারণ আছে, একটির সাথে অন্যটির সম্পর্ক নেই:
+
+| # | সমস্যা | কোথায় | সমাধান |
+|---|---|---|---|
+| ১ | `Tailscale connect` ব্যর্থ | `network-preflight` step 4 | Tailscale OAuth সিক্রেট + ACL ঠিক করা |
+| ২ | `deploy` job স্কিপড | `vars.VPS_DEPLOY_ENABLED` সেট নেই | ভ্যারিয়েবল `true` করা |
+| ৩ | `production` environment গেট নেই | GitHub Environments | Required reviewer যোগ করা |
+
+**ফাইল হারানো বা কোডের সমস্যা নয়** — `verify` ও `Secret scan` দুটোই সবুজ।
+
+---
+
+## ২. আপনার কাছ থেকে যে তথ্যগুলো দরকার (সবই নন-সিক্রেট)
+
+নিচের ব্লকটা কপি করে যেখানে যা আছে লিখে পাঠিয়ে দিন (খালি থাকলে "জানি না" লিখুন):
+
+```
+১) সার্ভার কোনটা?            → VPS / cPanel / দুটোই?
+২) পাবলিক ডোমেইন             → ex: learn.alolabs.net
+৩) VPS-এ অ্যাপ ফোল্ডার        → ex: /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION
+৪) PM2 অ্যাপের নাম            → ex: learn-aloeducation
+৫) অ্যাপের ইন্টারনাল পোর্ট    → ex: 3061
+৬) চালানোর ইউজার              → ex: alamin
+৭) SSH পোর্ট                  → ex: 22
+৮) সার্ভার কি Tailscale-এ আছে? → হ্যাঁ/না
+৯) MySQL ডাটাবেস নাম/হোস্ট     → ex: 127.0.0.1:3306/db_learn
+১০) Node ভার্সন (VPS-এ)       → node -v
+১১) Nginx/Caddy দিয়ে প্রোক্সি? → ex: Nginx → 127.0.0.1:3061
+১২) PM2-এ এখন অ্যাপ চলছে কি?   → pm2 list (আউটপুট)
+১৩) git remote pull করতে পারে? → সার্ভারে git pull কাজ করে?
+১৪) sudo লাগবে কি?            → pm2 restart-এ sudo দরকার?
+```
+
+> ⚠️ **কোনো পাসওয়ার্ড, প্রাইভেট কী, API টোকেন চ্যাটে পাঠাবেন না।**
+> সিক্রেট শুধু GitHub-এর Secrets পাতায় বসবে — কমান্ড আমি দেব, রান আপনি করবেন।
+
+---
+
+## ৩. ধাপে ধাপে: কী কী করতে হবে
+
+### ধাপ A — Tailscale (এটা ছাড়া deploy কখনো শুরু হবে না)
+
+1. Tailscale admin → **Settings → OAuth clients → Generate**
+   - Scopes: `auth_keys` (write) — আর কিছু না
+   - Tags: `tag:github-runner`
+2. Tailscale **Access Controls**-এ যোগ করুন:
+   ```json
+   { "action": "accept", "src": ["tag:github-runner"], "dst": ["tag:server:22"] }
+   ```
+   (`tag:server` আপনার VPS-এর ট্যাগ; বাস্তব ট্যাগ নাম বসাবেন)
+3. GitHub → Settings → Secrets → Actions-এ যোগ করুন:
+   `TAILSCALE_OAUTH_CLIENT_ID`, `TAILSCALE_OAUTH_SECRET`
+
+### ধাপ B — SSH অ্যাক্সেস
+
+```bash
+# লোকাল মেশিনে — ডেডিকেটেড deploy key (পাসফ্রেজ ছাড়া)
+ssh-keygen -t ed25519 -C "gha-deploy-$(date +%F)" -f ~/.ssh/alo_deploy -N ""
+
+# পাবলিক কী সার্ভারে বসান
+ssh-copy-id -i ~/.ssh/alo_deploy.pub USER@HOST
+
+# সার্ভারের ফিঙ্গারপ্রিন্ট নিন (VPS_SSH_HOST_KEY এর জন্য)
+ssh-keyscan -p 22 -t ed25519 HOST
+```
+
+GitHub Secrets-এ যোগ করুন: `SERVER_HOST` (tailnet IP/নাম), `VPS_USER`,
+`VPS_SSH_KEY` (প্রাইভেট কীটার **পুরো** কনটেন্ট), `VPS_SSH_HOST_KEY`
+(`ssh-keyscan`-এর আউটপুট লাইন), `VPS_PORT`।
+
+### ধাপ C — Repository Variables (নাম হুবহু মিলতে হবে)
+
+| Variable | মান |
+|---|---|
+| `VPS_APP_DIR` | `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION` |
+| `VPS_PM2_APP` | `learn-aloeducation` |
+| `VPS_APP_PORT` | `3061` |
+| `DEPLOY_URL` | `http://learn.alolabs.net` |
+| `HEALTH_PATH` | `/api/health` |
+
+> এই পাঁচটি মান **হার্ডকোড করা** `scripts/deploy-production.sh`-এর সাথে হুবহু
+> মিলতে হবে, নাহলে স্ক্রিপ্ট নিজেই থেমে যাবে। সার্ভারে সত্যিই অন্য পথ/পোর্ট হলে
+> আগে স্ক্রিপ্ট আপডেট করতে হবে — বলবেন, করে দেব।
+
+### ধাপ D — Deployment গেট (নিরাপত্তার জন্য, একবারই)
+
+1. GitHub → Settings → **Environments → production** → New environment
+2. **Required reviewers** → নিজেকে যোগ করুন
+3. `verify` ও `network-preflight` সবুজ হলে deploy জব অনুমোদনের জন্য থামবে
+
+> এটা রাখলে "সাথে সাথে লাইভ" হবে না — অনুমোদন দিতে হবে।
+> একেবারে অটো (অনুমোদন ছাড়া) চাইলে reviewer খালি রাখতে হবে; আমি সুপারিশ করি
+> অন্তত প্রথম কয়েক রিলিজের জন্য reviewer রাখা।
+
+### ধাপ E — সবশেষে চালু করুন
+
+```bash
+gh variable set VPS_DEPLOY_ENABLED --body true
+```
+
+এটাই আসল সুইচ। এর পরে `main`-এ যেকোনো merge → স্বয়ংক্রিয় ডিপ্লয়।
+
+### ধাপ F — (ঐচ্ছিক) মাইগ্রেশন থাকলে
+
+নতুন Prisma মাইগ্রেশন থাকলে deploy স্ক্রিপ্ট জোর করে দুটি ভ্যারিয়েবল দাবি করে:
+
+```bash
+SHA=<merge commit এর full SHA>
+gh variable set VPS_RESTORE_TEST_SHA --body "$SHA"
+gh variable set VPS_RESTORE_TEST_REFERENCE --body "restore-rehearsal-$(date +%F)"
+gh variable set VPS_SCHEMA_PREFLIGHT_SHA --body "$SHA"
+gh variable set VPS_SCHEMA_PREFLIGHT_REFERENCE --body "schema-review-$(date +%F)"
+gh variable set VPS_MIGRATION_PLAN_SHA --body "$SHA"   # শুধু pending migration থাকলে
+```
+
+⚠️ এগুলো "আমি ব্যাকআপ রিস্টোর ও স্কিমা রিভিউ করেছি" — এই ঘোষণাটি সত্যি হতে হবে।
+মাইগ্রেশন অটো-রিভার্ট হয় না; ভুল হলে ডেটা ফেরানো যায় না।
+
+---
+
+## ৪. প্রতিবার কীভাবে কাজ করবে (লক্ষ্য অর্জনের পর)
+
+| আপনি যা বলবেন | আমি যা করব |
+|---|---|
+| "অমুক ফিচার যোগ করো" | শাখায় কোড + টেস্ট → commit → `gh pr create` |
+| "merge করে দাও" বা আমি অনুমতি চাইব | `gh pr merge <n> --squash` → CI গ্রিন হলে অটো-ডিপ্লয় |
+| "লাইভ হয়েছে?" | `gh run list` + `curl /api/health` দিয়ে `releaseSha` যাচাই |
+
+সম্পূর্ণ অটো করতে চাইলে দুটি ঐচ্ছিক ধাপ:
+
+```bash
+# ১) CI পাস হলে auto-merge চালু (নিজের PR-এর জন্য)
+gh pr merge <number> --auto --squash
+
+# ২) main-এ সরাসরি push না করে শুধু PR দিয়ে কাজ — branch protection চালু রাখুন
+```
+
+---
+
+## ৫. যা এখনো অটো হবে না (ইচ্ছাকৃতভাবে)
+
+- **ডেটাবেস মাইগ্রেশন** — প্রতিটি pending মাইগ্রেশনের জন্য আলাদা SHA-অনুমোদন লাগে।
+  চাইলে এই গেট শিথিল করা যায়, কিন্তু তখন ব্যাকআপ ছাড়া ডেটা ঝুঁকিতে পড়বে।
+- **প্রথম ইনস্টল** — স্ক্রিপ্ট ধরে নেয় PM2-তে অ্যাপ আগে থেকেই চলছে
+  (`pm2 list` খালি হলে deploy শুরুই হবে না)। প্রথমবার একটি ম্যানুয়াল bootstrap লাগবে।
+- **Rollback** — কোড অটো-রোলব্যাক হয় (PM2 health ফেল করলে), ডেটাবেস নয়।
+
+---
+
+## ৬. দুটি অসঙ্গতি যা আগে ঠিক করা উচিত
+
+1. `deploy/app-deploy.sh` ডিফল্ট হিসেবে `/home/aloedu/LEARNING-JOURNEY` ও পোর্ট
+   `3017` ধরে, কিন্তু `scripts/deploy-production.sh` কঠোরভাবে
+   `/home/alamin/alolabs-projects/...` ও `3061` দাবি করে। কোনটা সত্যি?
+2. `deploy/monitor.sh`-এও পুরোনো পাথ/পোর্ট আছে। একটি সত্যিকারের মান ঠিক করে
+   বাকিগুলো সেই অনুযায়ী আপডেট করা দরকার।
+
+দুটোই ছোট ফিক্স — আপনি সত্যিকারের পাথ/পোর্ট জানালে এক PR-এ ঠিক করে দেব।
