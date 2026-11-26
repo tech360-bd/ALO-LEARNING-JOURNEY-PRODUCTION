@@ -124,7 +124,11 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          tags: tag:github-runner
+          # Tag advertising is optional. A tailnet whose policy does not define
+          # the tag fails the join with 'requested tags [...] are invalid or not
+          # permitted', so the tag comes from a repository variable: leave
+          # TAILSCALE_TAGS unset for an untagged ephemeral node.
+          tags: ${{ vars.TAILSCALE_TAGS }}
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
@@ -137,11 +141,16 @@ jobs:
       - name: Join tailnet (explicit, full error output)
         env:
           TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TS_TAGS: ${{ vars.TAILSCALE_TAGS }}
         run: |
           set -uo pipefail
           HOSTNAME_ARG="gha-learn-deploy-${{ github.run_id }}"
           sudo -n tailscale status >/dev/null 2>&1 && { echo "already joined"; sudo -n tailscale status | head -5; exit 0; }
           if [ -z "${TS_AUTH_KEY:-}" ]; then echo "::error::TAILSCALE_AUTH_KEY is empty"; exit 1; fi
+          TS_TAGS="${TS_TAGS:-}"
+          TAG_ARGS=()
+          if [ -n "$TS_TAGS" ]; then TAG_ARGS=("--advertise-tags=$TS_TAGS"); fi
+          echo "tags requested: ${TS_TAGS:-<none — untagged node>}"
           case "$TS_AUTH_KEY" in
             tskey-auth-*) echo "key type: auth key, length=${#TS_AUTH_KEY}" ;;
             tskey-client-*) echo "key type: OAuth client SECRET (wrong input — that belongs in TAILSCALE_OAUTH_SECRET), length=${#TS_AUTH_KEY}" ;;
@@ -155,19 +164,21 @@ jobs:
             echo "exit=$code"
             return "$code"
           }
-          if attempt "tagged" --advertise-tags=tag:github-runner --authkey="$TS_AUTH_KEY"; then
-            echo "::notice title=Tailnet::joined with tag:github-runner"
+          if attempt "configured" "${TAG_ARGS[@]}" --authkey="$TS_AUTH_KEY"; then
+            echo "::notice title=Tailnet::joined (tags: ${TS_TAGS:-none})"
             sudo -n tailscale status | head -5
             exit 0
           fi
-          echo "::warning title=Tailnet::tagged join failed, retrying without tags to isolate the cause"
           sudo -n tailscale logout >/dev/null 2>&1 || true
-          if attempt "untagged" --authkey="$TS_AUTH_KEY"; then
-            echo "::error title=Tailnet::the key joins the tailnet but cannot advertise tag:github-runner — add that tag to the key, or grant the key's owner ownership of tag:github-runner in the tailnet policy tagOwners."
-            sudo -n tailscale logout >/dev/null 2>&1 || true
-            exit 1
+          if [ "${#TAG_ARGS[@]}" -gt 0 ]; then
+            echo "::warning title=Tailnet::tagged join failed, retrying without tags"
+            if attempt "untagged" --authkey="$TS_AUTH_KEY"; then
+              echo "::error title=Tailnet::the key joins without tags but cannot advertise '$TS_TAGS' — add \"tagOwners\": {\"$TS_TAGS\": [\"autogroup:admin\"]} to the tailnet access policy, or clear the TAILSCALE_TAGS repository variable."
+              sudo -n tailscale logout >/dev/null 2>&1 || true
+              exit 1
+            fi
           fi
-          echo "::error title=Tailnet::tailscale up rejected the credential. Output above. Common causes: key expired/revoked/already used (non-reusable keys are single-use), key belongs to another tailnet, or the value was truncated."
+          echo "::error title=Tailnet::tailscale up rejected the credential (output above). Causes: the auth key is tagged with a tag the policy does not define in tagOwners; the key is expired, revoked or already used (non-reusable keys are single-use, so a key consumed by an earlier run never works again); or the key belongs to another tailnet. Fix: generate a fresh key with no tags and no expiry pressure, and clear TAILSCALE_TAGS if the tag is not defined in the policy."
           exit 1
 
       - name: Assert tailnet membership
@@ -339,7 +350,11 @@ jobs:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          tags: tag:github-runner
+          # Tag advertising is optional. A tailnet whose policy does not define
+          # the tag fails the join with 'requested tags [...] are invalid or not
+          # permitted', so the tag comes from a repository variable: leave
+          # TAILSCALE_TAGS unset for an untagged ephemeral node.
+          tags: ${{ vars.TAILSCALE_TAGS }}
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
