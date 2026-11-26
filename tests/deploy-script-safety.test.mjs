@@ -192,5 +192,5 @@ test("the read-only preflight fails fast and publishes network evidence", () => 
   assert.match(workflow, /timeout-minutes: 4/);
   assert.match(workflow, /name: Network evidence \(annotations, safe to fail\)/);
   assert.match(workflow, /title=Network::/);
-  assert.match(workflow, /tailscale ping -c 1 -t 5s/);
+  assert.match(workflow, /tailscale ping -c 1 --timeout=5s/);
 });
