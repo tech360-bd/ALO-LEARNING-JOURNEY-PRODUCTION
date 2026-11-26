@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [monitor, seoView, avatarView, avatarRoute, briefRoute, aiSource, layout, styles] = await Promise.all([
+const [monitor, seoView, avatarView, avatarRoute, briefRoute, aiSource, layout, styles, robots, sitemap] = await Promise.all([
   "deploy/monitor.sh",
   "src/components/alo/SeoView.tsx",
   "src/components/alo/HumanAvatarView.tsx",
@@ -14,11 +14,13 @@ const [monitor, seoView, avatarView, avatarRoute, briefRoute, aiSource, layout, 
   "src/lib/ai.ts",
   "src/app/layout.tsx",
   "src/app/globals.css",
+  "public/robots.txt",
+  "src/app/sitemap.ts",
 ].map((file) => readFile(path.join(root, file), "utf8")));
 
 test("monitor uses the reported MySQL app target and stays read-only", () => {
-  assert.match(monitor, /\/home\/aloedu\/LEARNING-JOURNEY/);
-  assert.match(monitor, /3017/);
+  assert.match(monitor, /\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION/);
+  assert.match(monitor, /3061/);
   assert.match(monitor, /learn-aloeducation/);
   assert.match(monitor, /pm2 jlist/);
   assert.match(monitor, /no restart attempted/);
@@ -49,4 +51,21 @@ test("font loading is self-hosted and does not fetch Google Fonts during builds"
   assert.doesNotMatch(layout, /next\/font\/google|fonts\.googleapis\.com/);
   assert.match(styles, /url\("\/fonts\/HindSiliguri-Regular\.ttf"\)/);
   assert.match(layout, /icon: "\/logo\.svg"/);
+});
+
+test("the crawler entry points survive without a robots.ts route handler", () => {
+  // src/app/robots.ts was retired in favour of public/robots.txt; the sitemap
+  // reference it used to emit must still be advertised to crawlers.
+  assert.match(robots, /^User-agent: \*$/m);
+  assert.match(robots, /^Allow: \/$/m);
+  assert.match(sitemap, /sitemap\(\): MetadataRoute\.Sitemap/);
+  const sitemapHost = sitemap.match(/https:\/\/[a-z0-9.-]+/)?.[0];
+  const robotsSitemap = robots.match(/^Sitemap: (\S+)$/m)?.[1];
+  assert.ok(robotsSitemap, "public/robots.txt must advertise a Sitemap");
+  if (sitemapHost) {
+    assert.ok(
+      robotsSitemap.startsWith(sitemapHost),
+      `robots.txt Sitemap (${robotsSitemap}) must point at the sitemap host (${sitemapHost})`,
+    );
+  }
 });

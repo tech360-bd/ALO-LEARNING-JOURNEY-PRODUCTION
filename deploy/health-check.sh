@@ -4,13 +4,13 @@ set -Eeuo pipefail
 cd /
 
 fail() { printf '[health] ERROR: %s\n' "$*" >&2; exit 1; }
-APP_DIR="${APP_DIR:-/home/aloedu/LEARNING-JOURNEY}"
+APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
 APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
-PORT="${APP_PORT:-3017}"
+PORT="${APP_PORT:-3061}"
 DOMAIN="${PUBLIC_BASE_URL:-https://learn.aloeducation.com}"
-[ "$APP_DIR" = "/home/aloedu/LEARNING-JOURNEY" ] || fail "APP_DIR must be /home/aloedu/LEARNING-JOURNEY"
+[ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION"
 [ "$APP_NAME" = "learn-aloeducation" ] || fail "PM2 app must be learn-aloeducation"
-[ "$PORT" = "3017" ] || fail "application port must be 3017"
+[ "$PORT" = "3061" ] || fail "application port must be 3061"
 case " https://learn.aloeducation.com https://learn.alolabs.net " in *" $DOMAIN "*) ;; *) fail "public URL must be one of: https://learn.aloeducation.com https://learn.alolabs.net";; esac
 for cmd in pm2 node curl ss; do command -v "$cmd" >/dev/null || fail "$cmd is not installed"; done
 
@@ -23,8 +23,8 @@ let input=""; process.stdin.setEncoding("utf8"); process.stdin.on("data",x=>inpu
 fi
 printf '[health] PM2 %s is online\n' "$APP_NAME"
 
-ss -lntH | awk '$4 ~ /:3017$/ { found=1 } END { exit !found }' || fail "port 3017 is not listening"
-printf '[health] port 3017 is listening\n'
+ss -lntH | awk '$4 ~ /:3061$/ { found=1 } END { exit !found }' || fail "port 3061 is not listening"
+printf '[health] port 3061 is listening\n'
 
 EXPECTED_SHA="${EXPECTED_SHA:-}"
 if [ -z "$EXPECTED_SHA" ] && [ -f "$APP_DIR/current/RELEASE_SHA" ]; then

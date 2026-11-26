@@ -317,8 +317,11 @@ if [ "$STATUS_CODE" -ne 0 ]; then
   EXPECTED_AFTER_OTP="$(printf '%s\n' 20261018000000_v2_additive_mysql_tables 20261111000000_marketingos_workforce_tables 20261124000000_social_publish_claims)"
   EXPECTED_MARKETINGOS_ONLY="$(printf '%s\n' 20261111000000_marketingos_workforce_tables 20261124000000_social_publish_claims)"
   EXPECTED_SOCIAL_CLAIMS_ONLY="20261124000000_social_publish_claims"
+  EXPECTED_SUPER_ADMIN_ONLY="20261125000000_super_admin_omni_selfheal"
+  EXPECTED_MARKETINGOS_THROUGH_SUPER_ADMIN="$(printf '%s\n' 20261111000000_marketingos_workforce_tables 20261124000000_social_publish_claims 20261125000000_super_admin_omni_selfheal)"
+  EXPECTED_SOCIAL_CLAIMS_THROUGH_SUPER_ADMIN="$(printf '%s\n' 20261124000000_social_publish_claims 20261125000000_super_admin_omni_selfheal)"
   [ "$PENDING" = "$HISTORY_PENDING" ] || fail "Prisma status differs from the checksum-verified history suffix; no migration attempted"
-  if [ -z "$PENDING" ] || { [ "$PENDING" != "$EXPECTED_AFTER_BASELINE" ] && [ "$PENDING" != "$EXPECTED_AFTER_AVATAR" ] && [ "$PENDING" != "$EXPECTED_AFTER_ADMISSIONS" ] && [ "$PENDING" != "$EXPECTED_AFTER_OTP" ] && [ "$PENDING" != "$EXPECTED_MARKETINGOS_ONLY" ] && [ "$PENDING" != "$EXPECTED_SOCIAL_CLAIMS_ONLY" ]; }; then
+  if [ -z "$PENDING" ] || { [ "$PENDING" != "$EXPECTED_AFTER_BASELINE" ] && [ "$PENDING" != "$EXPECTED_AFTER_AVATAR" ] && [ "$PENDING" != "$EXPECTED_AFTER_ADMISSIONS" ] && [ "$PENDING" != "$EXPECTED_AFTER_OTP" ] && [ "$PENDING" != "$EXPECTED_MARKETINGOS_ONLY" ] && [ "$PENDING" != "$EXPECTED_SOCIAL_CLAIMS_ONLY" ] && [ "$PENDING" != "$EXPECTED_SUPER_ADMIN_ONLY" ] && [ "$PENDING" != "$EXPECTED_MARKETINGOS_THROUGH_SUPER_ADMIN" ] && [ "$PENDING" != "$EXPECTED_SOCIAL_CLAIMS_THROUGH_SUPER_ADMIN" ]; }; then
     fail "pending migrations are not a known ordered suffix after the reconciled baseline; no migration attempted"
   fi
   [ "$MIGRATION_PLAN_APPROVED_SHA" = "$EXPECTED_SHA" ] || fail "pending migrations require MIGRATION_PLAN_APPROVED_SHA to equal this exact, restored-copy-rehearsed SHA"

@@ -75,6 +75,10 @@ test("deployment never starts an absent PM2 process and retains a known-good rol
 
 test("pending migration suffix is allowlisted and exact-SHA approved", () => {
   assert.match(deployScript, /MIGRATION_PLAN_APPROVED_SHA" = "\$EXPECTED_SHA/);
+  // Every shipped migration must be reachable as the tail of an allowlisted
+  // pending suffix, otherwise a real release stalls on "unknown suffix".
+  assert.match(deployScript, /EXPECTED_SUPER_ADMIN_ONLY="20261125000000_super_admin_omni_selfheal"/);
+  assert.match(deployScript, /EXPECTED_SOCIAL_CLAIMS_THROUGH_SUPER_ADMIN/);
   assert.match(deployScript, /P3009\|P3018\|P3006\|P3005/);
   assert.match(deployScript, /pending migrations are not a known ordered suffix/);
   assert.match(deployScript, /migrate deploy is skipped/);
@@ -93,9 +97,9 @@ test("deployment verifies exact migration checksums and requires the baseline al
 test("public HTTPS health verification requires the exact released SHA", () => {
   assert.ok(workflow.includes('DEPLOY_URL: ${{ vars.DEPLOY_URL }}'));
   assert.ok(workflow.includes('HEALTH_PATH: ${{ vars.HEALTH_PATH }}'));
-  assert.ok(workflow.includes('[ "$DEPLOY_URL" = "http://learn.alolabs.net" ]'));
+  assert.ok(workflow.includes('[ "$DEPLOY_URL" = "https://learn.aloeducation.com" ]'));
   assert.ok(workflow.includes('[ "$HEALTH_PATH" = "/api/health" ]'));
-  assert.ok(workflow.includes('base="https://${DEPLOY_URL#http://}"'));
+  assert.ok(workflow.includes('base="${DEPLOY_URL%/}"'));
   assert.ok(workflow.includes('"$base$HEALTH_PATH"'));
   assert.match(workflow, /served_sha.*\$\{\{ github\.sha \}\}/);
   assert.match(workflow, /Public health\/release verification failed/);
