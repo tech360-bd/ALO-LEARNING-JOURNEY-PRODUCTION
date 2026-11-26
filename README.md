@@ -1,5 +1,19 @@
 # ALO Learning Journey
 
+**Bengali-first AI learning, admissions and workforce platform** — one Next.js
+app serving an admin console, a MarketingOS CRM, an omni-routed AI workforce,
+and a fully local voice/video studio. Everything below runs on this server.
+
+| Differentiator | What actually runs | Where |
+| --- | --- | --- |
+| **Bengali-first local TTS/ASR** | Piper (`bn_BD-google-medium`) → eSpeak fallback, Faster-Whisper / whisper.cpp for speech, and `ffmpeg` video rendering with `HindSiliguri` subtitle burn-in — CPU only, no hosted model | `src/lib/voice-engine.ts`, `src/lib/asr-engine.ts`, `src/lib/local-audio.ts`, `public/fonts/HindSiliguri-Bold.ttf` |
+| **Free-tier-only omni-routed AI** | Ollama `qwen2.5:7b` first, then a sequential `$0` chain (OmniRoute / OpenRouter `:free` / Groq / LLM7) with per-provider circuit breakers; paid providers stay gated behind `ALO_PAID_AI_API_ALLOWED` + owner approval | `src/lib/omni/router.ts`, `src/lib/omni/catalog.ts`, `src/lib/ai-chain.ts` |
+| **Approval-gated self-healing** | The detector may diagnose and *propose* fixes; every infrastructure or code mutation needs an explicit Super Admin approval written to the audit ledger | `src/lib/self-heal/`, `src/app/api/approvals`, `src/lib/super-admin/runs.ts` |
+
+Student and family PII is never routed to an external provider: the local Ollama
+engine is the default, and the external chain is limited to the owner's own
+system-management text.
+
 This repository contains the existing ALO Learning Journey application and its release/deployment tooling. It is not a replacement application.
 
 Latest: [security containment and release-candidate verification](audit/RC-CONTAINMENT.md). The earlier report below is the baseline, not the current test or dependency count.

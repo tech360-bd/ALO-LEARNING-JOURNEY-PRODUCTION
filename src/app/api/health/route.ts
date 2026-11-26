@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { localMediaBinaries, resolveFfmpegBinary, resolveFfprobeBinary } from "@/lib/local-audio";
 import { getAudioStorageDir, getBackupStorageDir, getVideoStorageDir } from "@/lib/storage-paths";
+import { mysqlConfigurationDetail, mysqlConfigurationOk } from "@/lib/health-policy.mjs";
 
 const run = promisify(execFile);
 
@@ -72,21 +73,25 @@ function checkEnv(results: Check[]) {
 }
 
 async function checkCoreConfiguration(results: Check[]) {
-  const url = process.env.DATABASE_URL ?? "";
-  const scheme = url.split(":")[0] || "";
-  const mysqlOk = Boolean(url) && (process.env.NODE_ENV !== "production" || scheme === "mysql" || scheme === "mysqls");
-  record(results, "MySQL configuration", true, mysqlOk, mysqlOk ? "configured" : "production requires a MySQL DATABASE_URL");
-
-  const { isAdminAuthenticationConfigured } = await import("@/lib/auth-config");
-  const authOk = isAdminAuthenticationConfigured();
-  const authIsCritical = process.env.NODE_ENV === "production";
+  const env = { nodeEnv: process.env.NODE_ENV, databaseUrl: process.env.DATABASE_URL };
   record(
     results,
-    "Administrator authentication",
-    authIsCritical,
-    authOk,
-    authOk ? "configured" : "not configured; production admin routes fail closed",
+    "MySQL configuration",
+    true,
+    mysqlConfigurationOk(env),
+    mysqlConfigurationDetail(env),
   );
+
+  const { isAdminAuthenticationConfigured, adminPasswordHashStatus } = await import("@/lib/auth-config");
+  const authOk = isAdminAuthenticationConfigured();
+  const hashState = adminPasswordHashStatus().state;
+  const authIsCritical = process.env.NODE_ENV === "production";
+  const detail = authOk
+    ? "configured"
+    : hashState === "interpolated"
+      ? "ADMIN_PASSWORD_HASH is present but was rewritten by dotenv interpolation; re-add it with escaped dollars (scrypt\\$…\\$…) or set it in the PM2 environment"
+      : "not configured; production admin routes fail closed";
+  record(results, "Administrator authentication", authIsCritical, authOk, detail);
 }
 
 async function checkStorage(results: Check[]) {

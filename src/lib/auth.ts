@@ -11,7 +11,7 @@
  *
  * The two systems are independent; neither accepts the other's credentials.
  */
-import { scryptSync, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import { getServerSession } from "next-auth";
 import type { NextAuthOptions, Session } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -20,41 +20,22 @@ import {
   isAdminAuthenticationConfigured,
   isAdminOtpRequired,
 } from "@/lib/auth-config";
+import { verifyAdminCredentials } from "@/lib/admin-password";
 import { SignJWT, jwtVerify } from "jose";
 import type { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import bcrypt from "bcryptjs";
 
 export { isAdminOtpRequired };
+// Re-exported so existing imports keep working; the implementation lives in a
+// dependency-free module that the health probe and the tests can load.
+export { verifyAdminCredentials };
 export const DEV_OWNER_ID = "dev-admin";
 
 function safeEqualText(actual: string, expected: string): boolean {
   const actualBytes = Buffer.from(actual, "utf8");
   const expectedBytes = Buffer.from(expected, "utf8");
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
-}
-
-/**
- * Password hashes use `scrypt$<base64url salt>$<base64url hash>`.
- * Credentials are configured out-of-band; there is no built-in password.
- */
-export function verifyAdminCredentials(email: string, password: string): boolean {
-  const configuredEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-  const encodedHash = process.env.ADMIN_PASSWORD_HASH;
-  if (!configuredEmail || !encodedHash || !email || !password) return false;
-  if (!safeEqualText(email.trim().toLowerCase(), configuredEmail)) return false;
-
-  const [algorithm, encodedSalt, encodedExpected] = encodedHash.split("$");
-  if (algorithm !== "scrypt" || !encodedSalt || !encodedExpected) return false;
-  try {
-    const salt = Buffer.from(encodedSalt, "base64url");
-    const expected = Buffer.from(encodedExpected, "base64url");
-    if (salt.length < 16 || expected.length < 32 || expected.length > 128) return false;
-    const actual = scryptSync(password, salt, expected.length);
-    return timingSafeEqual(actual, expected);
-  } catch {
-    return false;
-  }
 }
 
 export function isAdminAuthConfigured(): boolean {

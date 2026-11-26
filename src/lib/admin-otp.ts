@@ -9,9 +9,15 @@ const MAX_SENDS_PER_WINDOW = 3;
 const MAX_VERIFY_ATTEMPTS = 5;
 
 export class AdminOtpRateLimitError extends Error {
-  constructor(readonly retryAfterSeconds: number) {
+  // Explicit field + assignment instead of a constructor parameter property:
+  // the test runner loads this module with `--experimental-strip-types`, which
+  // only erases types and cannot synthesise parameter properties.
+  readonly retryAfterSeconds: number;
+
+  constructor(retryAfterSeconds: number) {
     super("OTP request rate limit reached");
     this.name = "AdminOtpRateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

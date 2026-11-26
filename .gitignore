@@ -83,6 +83,7 @@ db/
 *.db
 *.db-journal
 storage/videos/
+storage/audio/
 storage/photo-video/
 storage/local-db.json
 storage/backups/

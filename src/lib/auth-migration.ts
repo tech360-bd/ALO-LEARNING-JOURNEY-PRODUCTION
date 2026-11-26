@@ -1,12 +1,14 @@
 import { scryptSync, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
+import { parseAdminPasswordHash } from "./auth-config";
 
 export async function verifyAdminCredentialsMigration(
   email: string,
   password: string
 ): Promise<{ ok: boolean; needsMigration?: boolean }> {
   const configuredEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-  const legacyHash = process.env.ADMIN_PASSWORD_HASH;
+  // Accept the escaped / .env-expanded forms as well; see auth-config.ts.
+  const legacyHash = parseAdminPasswordHash(process.env.ADMIN_PASSWORD_HASH) ?? undefined;
   const newHash = process.env.ALO_ADMIN_PASSWORD_HASH;
 
   if (!configuredEmail || (!legacyHash && !newHash)) return { ok: false };
