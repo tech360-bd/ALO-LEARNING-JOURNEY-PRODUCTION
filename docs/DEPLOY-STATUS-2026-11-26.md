@@ -233,3 +233,52 @@ PM2 প্রসেসের `cwd` হলো `$APP_DIR/.next/standalone` — য
 > ```
 > এরপর ডিপ্লয় চালালে স্ক্রিপ্ট নিজেই সিমলিংক বানাবে। (`.env` হারাবে না — শেয়ার্ড
 > `shared/.env` থেকে কপি হয়।)
+
+## ১১. সর্বশেষ অবস্থা (main `b1ccd5f`)
+
+### কোড সম্পূর্ণ প্রস্তুত ✅
+
+| PR | কী হলো |
+|---|---|
+| #26 | `learn` PM2 নাম, `learn.alolabs.net` ডোমেইন, standalone release symlink, `RELEASE_SHA` ইনজেকশন |
+| #27 | নিজেরাই `tailscale up` চালানো — আসল এরর দৃশ্যমান |
+| #28 | ট্যাগ ঐচ্ছিক (`TAILSCALE_TAGS` unset ⇒ untagged join) |
+| #29 | action-কে OAuth pair পাঠানো বন্ধ (সেটাই `tailscale` ইনস্টল আটকাত) |
+| #30 | preflight দ্রুত ব্যর্থ হয় + নেটওয়ার্ক প্রমাণ annotation |
+| #31 | single-use key শনাক্তকরণ + `ping` ফ্ল্যাগ ঠিক |
+
+প্রতিটি PR-এ CI-র ২১টি ধাপ (lint, typecheck, 250 টেস্ট, migration parity, deploy-script tests, build) পাস করেছে।
+
+### শুধু একটি জিনিস বাকি: **Reusable auth key**
+
+রান `45851130345`-এ join সফল হয়েছিল (`alo-server-lap` peer হিসেবে দেখা গেছে),
+কিন্তু পরের রানেই আবার `Logged out` — কারণ Tailscale-এ **`Reusable` ডিফল্টে বন্ধ**,
+তাই একটি key একবারই কাজ করে।
+
+```
+Tailscale admin → Settings → Keys → Generate auth key
+   ✔ Reusable      ← এটাই আসল সমাধান
+   ✔ Ephemeral
+   ✔ Pre-approved
+   Tags: কিছুই দেবেন না (TAILSCALE_TAGS খালি রাখুন)
+```
+```bash
+gh secret set TAILSCALE_AUTH_KEY     # নতুন key পেস্ট করুন
+gh workflow run deploy.yml -f mode=preflight-only --ref main
+```
+
+### এরপর যা দেখা যাবে
+
+সফল join হলে `Network evidence` annotation সরাসরি বলবে কোন স্তরে সমস্যা (যদি থাকে):
+
+```
+target=<host> port=<port>
+peers=N tailnet-host-visible=1
+ping: pong from alo-server-lap ...
+tcp:open
+ssh: (খালি = সফল)
+```
+
+`tcp:closed` ⇒ সার্ভারে UFW/tailnet ACL-এ 22 খোলা নেই।
+`ssh:` এ `Permission denied` ⇒ `VPS_SSH_KEY`-এর পাবলিক অংশ সার্ভারের `authorized_keys`-এ নেই।
+`ssh:` এ `Host key verification failed` ⇒ `VPS_SSH_HOST_KEY` ভুল।
