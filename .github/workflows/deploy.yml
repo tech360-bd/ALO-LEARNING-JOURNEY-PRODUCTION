@@ -85,6 +85,7 @@ jobs:
 
       - name: Fail closed if networking secrets are missing
         env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
@@ -93,8 +94,9 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          [ -n "$TS_CLIENT_ID" ]     || missing="$missing TAILSCALE_OAUTH_CLIENT_ID"
-          [ -n "$TS_CLIENT_SECRET" ] || missing="$missing TAILSCALE_OAUTH_SECRET"
+          if [ -z "$TS_AUTH_KEY" ] && { [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; }; then
+            missing="$missing TAILSCALE_AUTH_KEY (or both TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_SECRET)"
+          fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
           [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
@@ -112,12 +114,27 @@ jobs:
       - name: Tailscale connect (ephemeral tagged runner)
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
+          # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
+          # takes precedence and needs no OAuth scopes at all. The action appends
+          # no query parameters to it, so it is the least error-prone option.
+          # Leave it unset to use the OAuth client pair instead.
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:github-runner
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
+
+      # The action can log `invalid key: unable to validate API key` on every
+      # retry and still complete; never continue to SSH without a live tailnet.
+      - name: Assert tailnet membership
+        run: |
+          if ! sudo -n tailscale status >/dev/null 2>&1; then
+            echo "::error::The runner did not join the tailnet. 'invalid key: unable to validate API key' means one of: (1) the credential itself is wrong or revoked, (2) an OAuth client lacks the auth_keys:write scope, (3) the OAuth client does not own tag:github-runner (it must also be listed under tagOwners in the tailnet policy), or (4) TAILSCALE_OAUTH_SECRET holds an auth key (tskey-auth-…) instead of a client secret — set TAILSCALE_AUTH_KEY for that case."
+            exit 1
+          fi
+          sudo -n tailscale status | head -5
 
       # The action reports only `sudo failed with exit code 1`, which hides the
       # real reason (unknown/mistagged OAuth key, ACL denial, expired client).
@@ -216,6 +233,7 @@ jobs:
 
       - name: Fail closed if deployment secrets are missing
         env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
@@ -224,8 +242,9 @@ jobs:
           VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
         run: |
           missing=""
-          [ -n "$TS_CLIENT_ID" ]     || missing="$missing TAILSCALE_OAUTH_CLIENT_ID"
-          [ -n "$TS_CLIENT_SECRET" ] || missing="$missing TAILSCALE_OAUTH_SECRET"
+          if [ -z "$TS_AUTH_KEY" ] && { [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; }; then
+            missing="$missing TAILSCALE_AUTH_KEY (or both TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_SECRET)"
+          fi
           [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
           [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
@@ -262,12 +281,25 @@ jobs:
       - name: Tailscale connect (ephemeral tagged runner)
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
+          # A plain pre-authorized, tag:github-runner auth key (tskey-auth-…)
+          # takes precedence and needs no OAuth scopes at all. The action appends
+          # no query parameters to it, so it is the least error-prone option.
+          # Leave it unset to use the OAuth client pair instead.
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
           tags: tag:github-runner
           version: '1.104.4' # matches the pinned action's current default
           hostname: gha-learn-deploy-${{ github.run_id }}
           ping: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
+
+      - name: Assert tailnet membership
+        run: |
+          if ! sudo -n tailscale status >/dev/null 2>&1; then
+            echo "::error::The runner did not join the tailnet. 'invalid key: unable to validate API key' means the credential is wrong/revoked, an OAuth client lacks auth_keys:write, the client does not own tag:github-runner in tagOwners, or TAILSCALE_OAUTH_SECRET holds an auth key instead of a client secret — set TAILSCALE_AUTH_KEY for that case."
+            exit 1
+          fi
+          sudo -n tailscale status | head -5
 
       - name: Configure SSH (pinned host key, key material only)
         env:

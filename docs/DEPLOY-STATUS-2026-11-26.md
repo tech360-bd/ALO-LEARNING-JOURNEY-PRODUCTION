@@ -94,3 +94,44 @@ echo "--- node ---"; node -v
 - **মাইগ্রেশন** (নতুন Prisma মাইগ্রেশন থাকলে) আলাদা SHA-অনুমোদন ছাড়া চলবে না;
   ডেটাবেস অটো-রোলব্যাক হয় না।
 - কোড-রোলব্যাক অটো: নতুন রিলিজের PM2 health ফেল করলে আগের রিলিজে ফিরে যায়।
+
+## ৮. আসল কারণ পাওয়া গেছে (রান `45824287514`)
+
+ডায়াগনস্টিক annotation থেকে:
+
+```
+tailscale-status: Logged out.
+tailscaled.log:  ... machineAuthorized=false ...
+                 Received error: invalid key: unable to validate API key
+sudo-non-interactive=yes
+tailscale-binary=/usr/local/bin/tailscale
+oauth-client-id-length=17
+```
+
+**অর্থ: runner কখনো tailnet-এ ঢোকেনি — credential-ই গ্রহণ হয়নি।**
+Tailscale-এর ডকুমেন্ট ও বাস্তব রিপোর্ট অনুযায়ী `invalid key: unable to validate
+API key` চারটি কারণে হতে পারে:
+
+1. OAuth client-এ **`auth_keys` write scope নেই**
+2. OAuth client **`tag:github-runner`-এর মালিক নয়** — এই ট্যাগ
+   `tagOwners`-এ সেই client-এর নামে থাকতে হবে
+3. Client/secret **ভুল বা রিভোক করা** (secret কপি করার সময় নতুন লাইন/স্পেস)
+4. `TAILSCALE_OAUTH_SECRET`-এ OAuth client secret-এর বদলে **auth key
+   (`tskey-auth-…`)** বসানো হয়েছে — action তখন `?preauthorized=true&ephemeral=true`
+   যোগ করে key-টা নষ্ট করে দেয়
+
+### সবচেয়ে সহজ সমাধান: সাধারণ auth key ব্যবহার করুন
+
+Auth key-তে কোনো scope/tagOwners ঝামেলা নেই। এখন কোড দুটোই সমর্থন করে:
+
+```bash
+# ১) Tailscale admin → Settings → Keys → Generate auth key
+#    ✔ Ephemeral  ✔ Pre-authorized  ✔ Tags: tag:github-runner  ✔ Expiry: 90 দিন
+# ২) GitHub-এ secret হিসেবে বসান
+gh secret set TAILSCALE_AUTH_KEY
+# (আগের OAuth দুটো মুছে ফেলার দরকার নেই — authkey থাকলে সেটাই ব্যবহার হবে)
+```
+
+> পুরোনো বাগ: action-টি `invalid key` লগ করে **তবুও success** দেখিয়ে SSH ধাপে
+> চলে যেত। এখন `Assert tailnet membership` ধাপ যোগ করা হয়েছে — tailnet-এ না
+> ঢুকলে সাথে সাথে পরিষ্কার এরর দিয়ে থামবে।

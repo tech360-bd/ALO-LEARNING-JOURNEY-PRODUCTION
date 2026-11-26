@@ -134,3 +134,14 @@ test('both SSH jobs pin the configured SSH port, independent of the app listener
   assert.notEqual(run('70000').status, 0);
   assert.equal(workflow.match(/bash scripts\/write-pinned-host\.sh/g)?.length, 2);
 });
+
+test("the tailnet join is accepted with either a plain auth key or an OAuth client", () => {
+  // A plain tskey-auth key needs no OAuth scopes and never gets query params
+  // appended; the OAuth pair stays supported for tailnets that require it.
+  assert.ok(workflow.includes("authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}"));
+  assert.ok(workflow.includes("oauth-client-id: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}"));
+  assert.match(workflow, /if \[ -z "\$TS_AUTH_KEY" \] && \{/);
+  assert.match(workflow, /Assert tailnet membership/);
+  assert.match(workflow, /invalid key: unable to validate API key/);
+  assert.equal(workflow.match(/name: Assert tailnet membership/g)?.length, 2);
+});
