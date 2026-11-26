@@ -38,7 +38,7 @@ branch ──PR──▶ CI (validate + Secret scan)  ✅ পাস
 ১) সার্ভার কোনটা?            → VPS / cPanel / দুটোই?
 ২) পাবলিক ডোমেইন             → ex: learn.alolabs.net
 ৩) VPS-এ অ্যাপ ফোল্ডার        → ex: /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION
-৪) PM2 অ্যাপের নাম            → ex: learn-aloeducation
+৪) PM2 অ্যাপের নাম            → ex: learn
 ৫) অ্যাপের ইন্টারনাল পোর্ট    → ex: 3061
 ৬) চালানোর ইউজার              → ex: alamin
 ৭) SSH পোর্ট                  → ex: 22
@@ -93,9 +93,9 @@ GitHub Secrets-এ যোগ করুন: `SERVER_HOST` (tailnet IP/নাম),
 | Variable | মান |
 |---|---|
 | `VPS_APP_DIR` | `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION` |
-| `VPS_PM2_APP` | `learn-aloeducation` |
+| `VPS_PM2_APP` | `learn` (live PM2 process, `ecosystem.learn.config.cjs`) |
 | `VPS_APP_PORT` | `3061` |
-| `DEPLOY_URL` | `http://learn.alolabs.net` |
+| `DEPLOY_URL` | `https://learn.alolabs.net` (`http://`-ও গ্রহণযোগ্য) |
 | `HEALTH_PATH` | `/api/health` |
 
 > এই পাঁচটি মান **হার্ডকোড করা** `scripts/deploy-production.sh`-এর সাথে হুবহু
@@ -191,18 +191,18 @@ Secrets বসেছে (`SERVER_HOST`, `VPS_HOST`, `VPS_PORT`, `VPS_SSH_KEY`,
 |---|---|---|---|
 | ১ | `Tailscale connect` ফেল | রান `45819078562` → `sudo failed with exit code 1` (৫ বার retry) | OAuth ক্লায়েন্টে `auth_keys:write` scope ও `tag:github-runner` ট্যাগ নেই, অথবা Tailscale ACL-এ `tag:github-runner → আপনার সার্ভার:22` নিয়ম নেই |
 | ২ | `VPS_SSH_HOST_KEY` সম্ভবত ভুল ফরম্যাট | পরের ধাপেই ধরা পড়বে | `ssh-keyscan -t ed25519 <হোস্ট>` এর **পুরো লাইন** (`হোস্ট ssh-ed25519 AAAA...`) বসাতে হবে |
-| ৩ | `VPS_PM2_APP` = `learn` | আপনার ভ্যারিয়েবল তালিকা | **`learn-aloeducation`** করতে হবে (স্ক্রিপ্ট হুবহু মেলায়) |
+| ৩ | ~~`VPS_PM2_APP`~~ | — | **সমাধান হয়েছে**: স্ক্রিপ্ট এখন `learn` গ্রহণ করে (আপনার লাইভ PM2 নাম) |
 | ৪ | `VPS_RESTORE_TEST_SHA` / `VPS_SCHEMA_PREFLIGHT_SHA` পুরোনো | `285ae78…` (এখন `main` = `354e449…`) | প্রতিটি রিলিজের exact SHA বসাতে হবে, নাহলে স্ক্রিপ্ট থেমে যাবে |
 
 ### 🔧 এই PR-এ যা ঠিক করা হয়েছে
-- `DEPLOY_URL` এখন `https://learn.aloeducation.com` (আপনার সেট করা মান) — আগে কোড `http://learn.alolabs.net` দাবি করত, তাই ডিপ্লয় কখনো শুরুই হতো না
+- `DEPLOY_URL` এখন `https://learn.alolabs.net` (ক্যানোনিক্যাল লাইভ ডোমেইন); `http://` ফর্মও গ্রহণ করা হয়, আর পাবলিক চেক সবসময় TLS-এ হয়
 - pending-migration allowlist-এ নতুন `20261125000000_super_admin_omni_selfheal` যোগ (আগে থাকলে "unknown suffix" তে আটকে যেত)
 - `deploy/app-deploy.sh`, `monitor.sh`, `health-check.sh`, `backup.sh`, `vps-bootstrap.sh` — সব `/home/aloedu/LEARNING-JOURNEY:3017` থেকে `/home/alamin/alolabs-projects/...:3061`-এ একীভূত
 
 ### এখনই রান করার কমান্ড
 
 ```bash
-gh variable set VPS_PM2_APP --body learn-aloeducation
+gh variable set VPS_PM2_APP --body learn
 ```
 
 Tailscale ঠিক করার পর যাচাই:

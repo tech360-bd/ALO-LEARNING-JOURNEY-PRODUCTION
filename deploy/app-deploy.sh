@@ -5,15 +5,15 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
-PM2_APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
+PM2_APP_NAME="${PM2_APP_NAME:-learn}"
 APP_PORT="${APP_PORT:-3061}"
 
 [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || {
   printf '[deploy] ERROR: APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION.\n' >&2
   exit 1
 }
-[ "$PM2_APP_NAME" = "learn-aloeducation" ] || {
-  printf '[deploy] ERROR: PM2_APP_NAME must be learn-aloeducation.\n' >&2
+[ "$PM2_APP_NAME" = "learn" ] || {
+  printf '[deploy] ERROR: PM2_APP_NAME must be learn.\n' >&2
   exit 1
 }
 [ "$APP_PORT" = "3061" ] || {

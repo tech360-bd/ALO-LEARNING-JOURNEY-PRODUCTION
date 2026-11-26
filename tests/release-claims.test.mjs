@@ -21,7 +21,7 @@ const [monitor, seoView, avatarView, avatarRoute, briefRoute, aiSource, layout, 
 test("monitor uses the reported MySQL app target and stays read-only", () => {
   assert.match(monitor, /\/home\/alamin\/alolabs-projects\/ALO-LEARNING-JOURNEY-PRODUCTION/);
   assert.match(monitor, /3061/);
-  assert.match(monitor, /learn-aloeducation/);
+  assert.match(monitor, /PM2_APP_NAME:-learn\}/);
   assert.match(monitor, /pm2 jlist/);
   assert.match(monitor, /no restart attempted/);
   assert.match(monitor, /No SQLite file\/database is expected or inspected/);

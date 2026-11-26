@@ -15,9 +15,9 @@ The repository currently declares package version `0.2.1`. No `v2.0.0` tag or Gi
 Operator-provided (not independently verified) production settings:
 
 - App directory: `/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION`
-- PM2 process: `learn-aloeducation`
+- PM2 process: `learn` (`ecosystem.learn.config.cjs`; cwd `.next/standalone`, port `3061`)
 - Port: `3061`
-- `DEPLOY_URL`: `http://learn.alolabs.net` (release verification requires HTTPS on the same host)
+- `DEPLOY_URL`: `https://learn.alolabs.net` (Cloudflare Tunnel → `127.0.0.1:3061`); `http://learn.alolabs.net` is also accepted, and release verification always uses HTTPS
 - `HEALTH_PATH`: `/api/health`
 - MySQL: `db_learn` at `127.0.0.1:3306`
 

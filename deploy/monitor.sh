@@ -7,12 +7,12 @@
 set -uo pipefail
 APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
 APP_PORT="${APP_PORT:-3061}"
-APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
+APP_NAME="${PM2_APP_NAME:-learn}"
 
 fail() { printf '[monitor] ERROR: %s\n' "$*" >&2; exit 1; }
 [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || fail "APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION"
 [ "$APP_PORT" = "3061" ] || fail "APP_PORT must be 3061"
-[ "$APP_NAME" = "learn-aloeducation" ] || fail "PM2 app must be learn-aloeducation"
+[ "$APP_NAME" = "learn" ] || fail "PM2 app must be learn"
 [ -d "$APP_DIR" ] || fail "APP_DIR does not exist; no action taken"
 
 printf '==========================================\n'

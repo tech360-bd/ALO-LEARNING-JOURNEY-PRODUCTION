@@ -2,8 +2,8 @@
 # live server uses Caddy, Nginx, or another proxy. Inspect the running service
 # and authoritative configuration read-only before making any proxy change.
 # Do not install this file without an explicit, reviewed proxy decision.
-learn.aloeducation.com {
-    reverse_proxy 127.0.0.1:3017
+learn.alolabs.net {
+    reverse_proxy 127.0.0.1:3061
     encode gzip
     header {
         X-Content-Type-Options nosniff

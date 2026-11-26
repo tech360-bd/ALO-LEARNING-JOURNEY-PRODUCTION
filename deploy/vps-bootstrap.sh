@@ -6,13 +6,13 @@ set -Eeuo pipefail
 cd /
 
 APP_DIR="${APP_DIR:-/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION}"
-APP_NAME="${PM2_APP_NAME:-learn-aloeducation}"
+APP_NAME="${PM2_APP_NAME:-learn}"
 PORT="${APP_PORT:-3061}"
-DOMAIN="${PUBLIC_BASE_URL:-https://learn.aloeducation.com}"
+DOMAIN="${PUBLIC_BASE_URL:-https://learn.alolabs.net}"
 [ "$APP_DIR" = "/home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION" ] || { echo '[preflight] ERROR: APP_DIR must be /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION' >&2; exit 1; }
-[ "$APP_NAME" = "learn-aloeducation" ] || { echo '[preflight] ERROR: PM2 process name must be learn-aloeducation' >&2; exit 1; }
+[ "$APP_NAME" = "learn" ] || { echo '[preflight] ERROR: PM2 process name must be learn' >&2; exit 1; }
 [ "$PORT" = "3061" ] || { echo '[preflight] ERROR: APP_PORT must be 3061' >&2; exit 1; }
-case " https://learn.aloeducation.com https://learn.alolabs.net " in *" $DOMAIN "*) ;; *) echo "[preflight] ERROR: public URL must be one of: https://learn.aloeducation.com https://learn.alolabs.net" >&2; exit 1;; esac
+case " https://learn.alolabs.net https://learn.aloeducation.com " in *" $DOMAIN "*) ;; *) echo "[preflight] ERROR: public URL must be one of: https://learn.alolabs.net https://learn.aloeducation.com" >&2; exit 1;; esac
 
 printf '%s\n' 'Read-only deployment preflight — no server configuration or data will be changed.'
 printf '[preflight] expected app path: %s\n' "$APP_DIR"
