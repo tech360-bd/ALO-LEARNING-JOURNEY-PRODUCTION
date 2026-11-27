@@ -45,6 +45,52 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: blocked ? 'URL destination is not allowed' : 'Unable to retrieve URL' }, { status: blocked ? 400 : 502 });
     }
     if (status < 200 || status >= 300) return NextResponse.json({ error: 'Retrieval failed' }, { status: 502 });
+
+    // Local-first extraction: Crawl4AI (if the owner runs it) → the in-repo native
+    // extractor. `mode=summary|metadata` keep the legacy behaviour below; `full`
+    // (and any request that explicitly asks for local extraction) uses the local
+    // pipeline, so RAG ingestion has one code path for "page → text".
+    const wantsLocal = body?.local === true || mode === 'full';
+    if (wantsLocal) {
+      const { extractPage } = await import('@/lib/local-web-search');
+      const extraction = await extractPage(target.href, { maxChars: mode === 'full' ? 10_000 : 4_000 });
+      if (!extraction.ok) {
+        return NextResponse.json(
+          {
+            error: 'extraction_failed',
+            url: target.href,
+            backends: extraction.skipped,
+            message: 'no local extractor could read this page (Crawl4AI and the native extractor both failed)',
+          },
+          { status: 502 },
+        );
+      }
+      const domain = new URL(target.href).hostname.replace(/^www\./, '');
+      await emitEvent({
+        companyId: payload.companyId,
+        userId: payload.userId,
+        type: 'scraper.url_scraped',
+        title: 'URL extracted locally',
+        description: `Extracted ${extraction.chars} chars from ${domain} via ${extraction.backend}`,
+        resourceType: 'scraper',
+        link: undefined,
+        metadata: { url: target.href, domain, backend: extraction.backend, paidUsed: false },
+      }).catch(() => undefined);
+      return NextResponse.json({
+        data: {
+          url: extraction.url,
+          domain,
+          title: extraction.title,
+          text: extraction.text,
+          chars: extraction.chars,
+          truncated: extraction.truncated,
+          backend: extraction.backend,
+          skipped: extraction.skipped,
+          paidUsed: false,
+          mode,
+        },
+      });
+    }
     const finalUrl = target.href;
     const domain = new URL(finalUrl).hostname.replace(/^www\./, '');
 

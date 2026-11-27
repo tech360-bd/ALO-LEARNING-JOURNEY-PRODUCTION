@@ -42,6 +42,39 @@ const DEFAULT_MAX_TOKENS = 1024;
 const DEFAULT_TEMPERATURE = 0.4;
 
 /**
+ * Ask the local Ollama server. Returns null (never throws) when it cannot
+ * answer, so callers can decide whether to continue down a chain.
+ */
+async function tryOllama(
+  messages: ChatMessage[],
+  options: ChainCallOptions,
+  maxTokens: number,
+  temperature: number,
+  modelOverride?: string,
+): Promise<{ text: string; model: string; promptTokens?: number; completionTokens?: number } | null> {
+  try {
+    const ollamaUrl = getPrivateLocalBaseUrl('OLLAMA_BASE_URL', 'http://localhost:11434').href.replace(/\/$/, '');
+    const model = modelOverride
+      ?? (options.preferredModel?.startsWith('ollama:')
+        ? options.preferredModel.slice(7)
+        : process.env.OLLAMA_CHAT_MODEL || process.env.OLLAMA_MODEL || 'llama3.2');
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream: false, options: { temperature, num_predict: maxTokens } }),
+      cache: 'no-store',
+    });
+    if (!r.ok) return null;
+    const data: any = await r.json();
+    const text = data?.message?.content || '';
+    if (!text) return null;
+    return { text, model, promptTokens: data?.prompt_eval_count, completionTokens: data?.eval_count };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run a chat completion through the free-model chain.
  *
  * If `ruleBasedFallback` is omitted, the chain ends in a deterministic
@@ -59,7 +92,27 @@ export async function chainChat(
 
   const attempts: Array<{ provider: ChainCallResult['provider']; ok: boolean; error?: string }> = [];
 
-  // 0. Registry-driven path — if the Super Admin has configured providers
+  // ── 0. LOCAL FIRST ──────────────────────────────────────────────────────
+  // The policy on this deployment is "self-hosted, $0, data stays on the box",
+  // so Ollama answers before any remote provider is contacted. This is not a
+  // preference among equals: a remote call costs money, sends student text to a
+  // third party and fails when the network does. `ALO_PROVIDER_ORDER=remote-first`
+  // restores the old behaviour for an operator who wants it, and is the only way
+  // to reorder this.
+  const localFirst = (process.env.ALO_PROVIDER_ORDER ?? 'local-first') !== 'remote-first';
+  if (localFirst) {
+    const local = await tryOllama(messages, options, maxTokens, temperature);
+    if (local) {
+      attempts.push({ provider: 'ollama', ok: true });
+      return makeResult(local.text, 'ollama', local.model, attempts.length, start, {
+        promptTokens: local.promptTokens,
+        completionTokens: local.completionTokens,
+      });
+    }
+    attempts.push({ provider: 'ollama', ok: false, error: 'local model unavailable' });
+  }
+
+  // 1. Registry-driven path — if the Super Admin has configured providers
   //    in the AiModelProvider table, try those first (in priority order).
   //    This is the hot path once the admin has added their keys via the UI.
   try {
@@ -203,35 +256,18 @@ export async function chainChat(
     }
   }
 
-  // 5. Ollama (self-hosted)
-  try {
-    attempts.push({ provider: 'ollama', ok: true });
-    const ollamaUrl = getPrivateLocalBaseUrl('OLLAMA_BASE_URL', 'http://localhost:11434').href.replace(/\/$/, '');
-    const model = options.preferredModel?.startsWith('ollama:')
-      ? options.preferredModel.slice(7)
-      : process.env.OLLAMA_CHAT_MODEL || 'llama3.2';
-    const r = await fetch(`${ollamaUrl}/api/chat`, {
-      method: 'POST', signal: AbortSignal.timeout(30000), redirect: 'error',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, stream: false, options: { temperature, num_predict: maxTokens } }),
-      // Next.js fetch with no-cache to avoid SSRF cache surprise
-      cache: 'no-store',
-    });
-    if (r.ok) {
-      const data: any = await r.json();
-      const text = data?.message?.content || '';
-      if (text) {
-        return makeResult(text, 'ollama', model, attempts.length, start, {
-          promptTokens: data?.prompt_eval_count,
-          completionTokens: data?.eval_count,
-        });
-      }
+  // 5. Ollama again — the last real provider before the deterministic fallback,
+  //    so a temporarily busy local model gets one more chance after the remotes.
+  if (!localFirst) {
+    const local = await tryOllama(messages, options, maxTokens, temperature);
+    if (local) {
+      attempts.push({ provider: 'ollama', ok: true });
+      return makeResult(local.text, 'ollama', local.model, attempts.length, start, {
+        promptTokens: local.promptTokens,
+        completionTokens: local.completionTokens,
+      });
     }
-    attempts[attempts.length - 1].ok = false;
-    attempts[attempts.length - 1].error = `HTTP ${r.status}`;
-  } catch (e: any) {
-    attempts[attempts.length - 1].ok = false;
-    attempts[attempts.length - 1].error = e?.message?.slice(0, 120) || 'ollama failed';
+    attempts.push({ provider: 'ollama', ok: false, error: 'local model unavailable' });
   }
 
   // 6. Rule-based fallback — deterministic, never fails

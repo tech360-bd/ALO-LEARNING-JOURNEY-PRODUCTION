@@ -318,3 +318,66 @@ test("a Monid status question completes as a real run without touching the netwo
   assert.match(reply, /ALO_MONID_ENABLED/);
   runs._resetRuns?.();
 });
+
+// ── The deployment policy: paid features are OFF and stay off ───────────────
+// This is the guarantee the owner asked for in writing: with the policy
+// environment in place, *no* Monid call of any kind leaves the box — not a
+// search, not an inspect, not a balance read, and certainly not a run.
+test("policy lockdown: with ALO_MONID_ENABLED=false nothing reaches any Monid endpoint", async () => {
+  resetEnv({
+    ALO_MONID_ENABLED: "false",
+    MONID_API_KEY: "",
+    MONID_BASE_URL: BASE,
+    ALO_PAID_AI_API_ALLOWED: "false",
+    ALO_OWNER_APPROVED_PAID_AI_API: "false",
+  });
+  calls.length = 0;
+
+  const status = monid.monidStatus();
+  assert.equal(status.enabled, false);
+  assert.equal(status.ready.discover, false);
+  assert.equal(status.ready.run, false);
+  assert.equal(status.keyConfigured, false);
+
+  await assert.rejects(() => monid.monidDiscover({ query: "company data" }), (e) => e.code === "not_enabled");
+  await assert.rejects(() => monid.monidInspect("exa", "search"), (e) => e.code === "not_enabled");
+  await assert.rejects(() => monid.monidBalance(), (e) => e.code === "not_enabled");
+  await assert.rejects(
+    () => monid.runMonidEndpoint({ provider: "exa", endpoint: "search", approvalId: "act_1" }),
+    (e) => e.code === "not_enabled",
+  );
+
+  assert.equal(calls.length, 0, "not one HTTP request may be made while the policy is off");
+});
+
+test("policy lockdown: even a key plus open AI switches cannot run without the integration switch", async () => {
+  // A misconfiguration that sets the key but forgets ALO_MONID_ENABLED must not
+  // become a spending path — the integration switch is checked first.
+  resetEnv({
+    MONID_API_KEY: TOKEN,
+    MONID_BASE_URL: BASE,
+    ALO_PAID_AI_API_ALLOWED: "true",
+    ALO_OWNER_APPROVED_PAID_AI_API: "true",
+  });
+  calls.length = 0;
+  await assert.rejects(
+    () => monid.runMonidEndpoint({ provider: "exa", endpoint: "search", approvalId: "act_1", quotedPrice: "0.007 USD" }),
+    (e) => e.code === "not_enabled",
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("the shipped PM2 template keeps every paid switch off", async () => {
+  const fs = await import("node:fs");
+  const cfg = fs.readFileSync(new URL("../ecosystem.learn.config.cjs", import.meta.url), "utf8");
+  assert.match(cfg, /"ALO_PAID_AI_API_ALLOWED":\s*"false"/);
+  assert.match(cfg, /"ALO_OWNER_APPROVED_PAID_AI_API":\s*"false"/);
+  assert.match(cfg, /"ALO_MONID_ENABLED":\s*"false"/);
+  assert.match(cfg, /"MONID_API_KEY":\s*""/);
+  // Local-first endpoints must be present and loopback.
+  for (const key of ["SEARXNG_BASE_URL", "WIGOLO_BASE_URL", "CRAWL4AI_BASE_URL", "FASTER_WHISPER_URL", "PIPER_BASE_URL"]) {
+    const match = cfg.match(new RegExp(`"${key}":\\s*"([^"]*)"`));
+    assert.ok(match, `${key} must be in the PM2 template`);
+    assert.match(match[1], /^http:\/\/127\.0\.0\.1:\d+$/, `${key} must be loopback`);
+  }
+});

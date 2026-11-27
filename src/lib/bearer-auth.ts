@@ -78,6 +78,16 @@ const MARKETINGOS_EXACT_OR_TREE_ROOTS = [
   "/api/workflows",
 ];
 
+/**
+ * `/api/tools/*` sub-routes that belong to the ALO administrator, not to a
+ * MarketingOS tenant: they verify the NextAuth session via `requireOwner()`.
+ * Keep this list in sync with the route handlers — `tests/bearer-auth.test.mjs`
+ * fails if a route's auth check and this allowlist disagree.
+ */
+const ALO_ONLY_TOOLS_SUBPATHS = [
+  "/api/tools/web-search",
+];
+
 const MARKETINGOS_SUBTREE_ONLY_PREFIXES = [
   "/api/feeds/",
   "/api/leads/",
@@ -101,6 +111,13 @@ export function isMarketingOsApiPath(pathname: string): boolean {
 
   if (normalized.startsWith("/api/ai/")) {
     return normalized !== "/api/ai/local-status" && !normalized.startsWith("/api/ai/local-status/");
+  }
+
+  // ALO-administrator sub-routes inside an otherwise MarketingOS subtree. The
+  // gateway must not demand a MarketingOS JWT for a route that verifies the
+  // admin session instead — and must not let a bearer header bypass it either.
+  for (const aloPath of ALO_ONLY_TOOLS_SUBPATHS) {
+    if (normalized === aloPath || normalized.startsWith(`${aloPath}/`)) return false;
   }
 
   if (normalized === "/api/content" || normalized.startsWith("/api/content/")) {

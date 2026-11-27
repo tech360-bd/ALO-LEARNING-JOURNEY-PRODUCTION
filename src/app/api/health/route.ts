@@ -140,6 +140,49 @@ async function checkBinary(results: Check[], binaryPath: string, args: string[],
   }
 }
 
+/**
+ * The self-hosted services this box is supposed to run. A service that is down
+ * is reported as a NAMED, non-critical check — the app keeps serving, and the
+ * operator can see exactly which local capability degraded instead of guessing
+ * from a bare 503. Nothing here is paid, so a down service never costs money;
+ * it only costs accuracy.
+ */
+async function checkLocalServices(results: Check[]) {
+  const services: Array<{ name: string; url: string | undefined; health: string; help: string }> = [
+    { name: "Local search (SearXNG)", url: process.env.SEARXNG_BASE_URL || "http://127.0.0.1:8080", health: "/", help: "start searxng or set SEARXNG_BASE_URL" },
+    { name: "Local extraction (Crawl4AI)", url: process.env.CRAWL4AI_BASE_URL || "http://127.0.0.1:11235", health: "/health", help: "the native extractor is the fallback" },
+    { name: "Local ASR (faster-whisper)", url: process.env.FASTER_WHISPER_URL, health: "/health", help: "python3 scripts/services/faster_whisper_server.py" },
+    { name: "Local TTS (Piper)", url: process.env.PIPER_BASE_URL, health: "/health", help: "python3 scripts/services/piper_server.py" },
+    { name: "Local model (Ollama)", url: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434", health: "/api/tags", help: "ollama serve" },
+  ];
+
+  await Promise.all(
+    services.map(async (service) => {
+      if (!service.url) {
+        record(results, service.name, false, false, `not configured — ${service.help}`);
+        return;
+      }
+      let detail: string;
+      let ok = false;
+      try {
+        const res = await fetch(`${service.url.replace(/\/+$/, "")}${service.health}`, {
+          signal: AbortSignal.timeout(2_500),
+          cache: "no-store",
+          redirect: "error",
+        });
+        // Any answered HTTP status proves the daemon is listening; a 4xx from a
+        // health path is still a running service.
+        ok = res.status < 500;
+        detail = `listening (HTTP ${res.status}) at ${new URL(service.url).host}`;
+      } catch (error) {
+        const cause = (error as { cause?: { code?: string }; message?: string })?.cause?.code ?? (error as Error)?.message ?? "unreachable";
+        detail = `down (${String(cause).slice(0, 80)}) — ${service.help}`;
+      }
+      record(results, service.name, false, ok, detail);
+    }),
+  );
+}
+
 async function checkLocalSpeech(results: Check[]) {
   const binaries = localMediaBinaries();
   if (binaries.piper) {
@@ -215,6 +258,7 @@ export async function GET(request: Request) {
       checkBinary(results, resolveFfmpegBinary(), ["-version"], "FFmpeg"),
       checkBinary(results, resolveFfprobeBinary(), ["-version"], "FFprobe"),
       checkLocalSpeech(results),
+      checkLocalServices(results),
     ]);
   } else {
     await checkDatabase(results);
@@ -248,6 +292,14 @@ export async function GET(request: Request) {
           releaseSource: release.source,
         }
       : baseResponse,
-    { status: summary.httpStatus, headers: { "Cache-Control": "no-store" } }
+    {
+      status: summary.httpStatus,
+      headers: {
+        "Cache-Control": "no-store",
+        // Readable in `curl -I` and in the smoke probe without exposing details:
+        // e.g. `x-alo-health-reason: Administrator authentication`.
+        "x-alo-health-reason": summary.failedCritical.join(",") || "none",
+      },
+    },
   );
 }
