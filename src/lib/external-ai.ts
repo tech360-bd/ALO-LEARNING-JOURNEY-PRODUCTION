@@ -39,6 +39,30 @@
 // env-overridable so the operator can follow the provider's live catalog.
 
 import { assertExternalAiAllowed, isExternalAiAllowed } from "./agentos/payment-guard.ts";
+import { primeRuntimeConfig, runtimeEnvSync } from "./runtime-config.ts";
+
+/**
+ * Environment values, with the dashboard-saved config as a fallback.
+ *
+ * Provider keys, model ids and gateway URLs are exactly the things an operator
+ * should be able to change from the Super Admin dashboard without a shell. A real
+ * environment variable still wins (see `src/lib/runtime-config.ts`).
+ */
+function env(name: string): string | undefined {
+  const value = runtimeEnvSync(name);
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Makes dashboard-saved provider config visible to the synchronous lookups below.
+ *
+ * The chain is synchronous deep inside its callers, so the config file is warmed
+ * once at the start of a request (`/api/ai/chat`, the status route, the credential
+ * test) instead of threading an async getter through every provider helper.
+ */
+export async function primeExternalAiConfig(): Promise<void> {
+  await primeRuntimeConfig();
+}
 
 export type ExternalChatResult = { content: string; model: string };
 
@@ -153,7 +177,7 @@ export function resolveGatewayEndpoint(raw: string): string | null {
 // ---------------------------------------------------------------------------
 
 function builtinProviders(): ProviderConfig[] {
-  const omnirouteBase = process.env.OMNIROUTE_BASE_URL?.trim() || "http://127.0.0.1:20128/v1";
+  const omnirouteBase = env("OMNIROUTE_BASE_URL")?.trim() || "http://127.0.0.1:20128/v1";
   const omnirouteEndpoint = resolveGatewayEndpoint(omnirouteBase);
   return [
     {
@@ -191,7 +215,7 @@ function builtinProviders(): ProviderConfig[] {
 }
 
 function aliasProvider(alias: (typeof GATEWAY_ALIASES)[number]): ProviderConfig {
-  const rawBase = process.env[alias.baseEnv]?.trim() || alias.defaultBase;
+  const rawBase = env(alias.baseEnv)?.trim() || alias.defaultBase;
   const endpoint = rawBase ? resolveGatewayEndpoint(rawBase) : null;
   return {
     id: alias.id,
@@ -263,7 +287,7 @@ export function parseCustomAiProviders(raw: string | undefined): ProviderConfig[
 }
 
 function allProviders(): ProviderConfig[] {
-  return [...builtinProviders(), ...parseCustomAiProviders(process.env.ALO_CUSTOM_AI_PROVIDERS_JSON)];
+  return [...builtinProviders(), ...parseCustomAiProviders(env("ALO_CUSTOM_AI_PROVIDERS_JSON"))];
 }
 
 /**
@@ -274,7 +298,7 @@ function allProviders(): ProviderConfig[] {
 export function orderedProviders(): ProviderConfig[] {
   const all = allProviders();
   const byId = new Map(all.map((p) => [p.id, p]));
-  const raw = process.env.ALO_EXTERNAL_AI_PROVIDERS?.trim();
+  const raw = env("ALO_EXTERNAL_AI_PROVIDERS")?.trim();
   if (raw) {
     const ordered: ProviderConfig[] = [];
     const seen = new Set<string>();
@@ -325,12 +349,12 @@ export type ExternalAiStatus = {
 
 function configuredModel(cfg: ProviderConfig): string {
   if (cfg.fixedModel) return cfg.fixedModel;
-  return (cfg.modelEnv ? process.env[cfg.modelEnv]?.trim() : "") || cfg.defaultModel;
+  return (cfg.modelEnv ? env(cfg.modelEnv)?.trim() : "") || cfg.defaultModel;
 }
 
 function providerStatus(cfg: ProviderConfig, enabled: boolean): ExternalProviderStatus {
   const model = configuredModel(cfg);
-  const hasKey = Boolean(process.env[cfg.apiKeyEnv]?.trim());
+  const hasKey = Boolean(env(cfg.apiKeyEnv)?.trim());
   // Ordered cheapest-to-diagnose first: a disabled switch explains every other
   // field, then a bad URL, then a missing key, then the model.
   let reason: ExternalProviderStatus["reason"];
@@ -435,7 +459,7 @@ export async function generateExternalChatJson(
   for (const { cfg, status } of candidates) {
     tried.push(cfg.id);
     try {
-      const apiKey = process.env[cfg.apiKeyEnv]?.trim() as string;
+      const apiKey = env(cfg.apiKeyEnv)?.trim() as string;
       return await callProvider(cfg, apiKey, status.model, system, user, timeoutMs);
     } catch {
       // Try the next configured provider; error bodies/keys never leak.

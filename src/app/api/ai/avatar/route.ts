@@ -4,7 +4,7 @@ import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { emitEvent } from '@/lib/events';
 import { createApprovedZai } from '@/lib/approved-zai';
-import { getExternalAiStatus } from '@/lib/external-ai';
+import { getExternalAiStatus, primeExternalAiConfig } from '@/lib/external-ai';
 export async function GET(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');

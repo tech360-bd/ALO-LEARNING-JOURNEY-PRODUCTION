@@ -12,6 +12,8 @@ export type IntentKind =
   | "analytics"
   | "backup"
   | "providers_status"
+  | "review_link"
+  | "set_config"
   | "chat";
 
 export interface ParsedIntent {
@@ -30,10 +32,49 @@ function has(text: string, ...terms: string[]): boolean {
   return terms.some((t) => text.includes(t));
 }
 
+const REPO_URL = /https?:\/\/[^\s<>"']*(?:github\.com|gitlab\.com)\/[^\s<>"']+/i;
+const OTHER_URL = /https?:\/\/[^\s<>"']+/i;
+/** "set GROQ_API_KEY to …" / "GROQ_API_KEY যোগ করুন" */
+const SET_CONFIG = /\b(set|update|change|configure|add)\b[^\n]{0,40}\b([A-Z][A-Z0-9_]{3,63})\b|\b([A-Z][A-Z0-9_]{3,63})\b[^\n]{0,20}(যোগ|সেট|বসান|দিন)/;
+
 export function parseIntent(raw: string): ParsedIntent {
   const text = raw.toLowerCase().trim();
 
   const providerMatch = PROVIDER_IDS.find((p) => text.includes(p));
+
+  // A shared link is the strongest signal: the owner pasted something and wants
+  // it checked. Matched before keyword rules so "check this error" and
+  // "https://github.com/… is broken" route differently.
+  const repoUrl = raw.match(REPO_URL)?.[0];
+  if (repoUrl) {
+    return {
+      kind: "review_link",
+      entities: { url: repoUrl },
+      confidence: 0.95,
+      reason: "Found a repository URL — review it instead of answering from memory.",
+    };
+  }
+
+  // A named allowlisted setting is a configuration change, not a chat answer.
+  const configName = SET_CONFIG.exec(raw)?.[2] ?? SET_CONFIG.exec(raw)?.[3];
+  if (configName) {
+    return {
+      kind: "set_config",
+      entities: { name: configName.toUpperCase() },
+      confidence: 0.9,
+      reason: `Detected a configuration change for ${configName.toUpperCase()}.`,
+    };
+  }
+
+  const otherUrl = raw.match(OTHER_URL)?.[0];
+  if (otherUrl && /\b(check|verify|review|inspect|খুঁজ|যাচাই|দেখো|দেখুন|ভালো|নিরাপদ|safe)\b/i.test(raw)) {
+    return {
+      kind: "review_link",
+      entities: { url: otherUrl },
+      confidence: 0.8,
+      reason: "A URL was shared together with a check/verify request.",
+    };
+  }
 
   if (has(text, "health", "স্বাস্থ্য", "সিস্টেম চেক", "system check", "status check", "system status", "স্ট্যাটাস")) {
     return { kind: "health_check", entities: {}, confidence: 0.9, reason: "Matched health/status keywords." };

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
 import { getRouterStatus, setPreferredProvider } from "@/lib/omni/router";
 import { OMNI_CATALOG, catalogSummary } from "@/lib/omni/catalog";
+import { primeExternalAiConfig } from "@/lib/external-ai";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +26,7 @@ export async function GET() {
   const denied = await guard();
   if (denied) return denied;
   try {
+    await primeExternalAiConfig();
     const status = await getRouterStatus();
     return NextResponse.json({ router: status, catalog: OMNI_CATALOG, catalogSummary: catalogSummary() });
   } catch (err) {
