@@ -127,6 +127,13 @@ jobs:
           fi
           echo "No drift: the migration chain reproduces prisma/schema.prisma exactly."
 
+      # The workflow files themselves are code: a wrong action tag, a renamed
+      # required job or a read-less mode switch must fail here, not on main.
+      # It runs in this job (not `security-scan`) because it needs the parser
+      # that ships with the installed dev dependencies.
+      - name: Validate workflow files
+        run: node scripts/validate-workflows.mjs
+
       - name: Lint
         run: npm run lint
 
@@ -207,11 +214,6 @@ jobs:
         run: |
           node --test tests/secret-scanner.test.mjs
           node scripts/scan-secrets.mjs
-
-      # The workflow files themselves are code: a wrong action tag, a renamed
-      # required job or an unread mode switch must fail here, not on main.
-      - name: Validate workflow files
-        run: node scripts/validate-workflows.mjs
 
       - name: Check database files are not tracked
         run: |

@@ -41,9 +41,20 @@ export async function loadYaml() {
     const mod = await import("js-yaml");
     return mod.default ?? mod;
   } catch {
+    // No top-level dependency of our own: js-yaml ships inside eslint. The
+    // nested copy is only there after an install, so say that plainly instead of
+    // dying with a bare ERR_MODULE_NOT_FOUND (which is exactly how the first
+    // CI run of this check failed in a job that runs no `npm ci`).
     const nested = path.join(process.cwd(), "node_modules", "@eslint", "eslintrc", "node_modules", "js-yaml", "index.js");
-    const mod = await import(nested);
-    return mod.default ?? mod;
+    try {
+      const mod = await import(nested);
+      return mod.default ?? mod;
+    } catch {
+      throw new Error(
+        "no YAML parser available: run this check after `npm ci` (it uses the js-yaml that ships with eslint). " +
+          "Nothing was validated — refusing to report a pass.",
+      );
+    }
   }
 }
 
@@ -199,7 +210,13 @@ export async function lintDirectory(dir) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   const dir = process.argv[2] ?? ".github/workflows";
-  const report = await lintDirectory(dir);
+  let report;
+  try {
+    report = await lintDirectory(dir);
+  } catch (error) {
+    console.error("::error title=Workflow validation::" + String(error.message ?? error).replace(/\n/g, " "));
+    process.exit(1);
+  }
   let errors = 0;
   for (const { file, findings } of report) {
     for (const finding of findings) {
