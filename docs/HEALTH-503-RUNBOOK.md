@@ -110,6 +110,23 @@ pm2 restart learn --update-env && pm2 save
 
 ## Step 3 — verify (the mission's gate)
 
+The scripted version of this step is one command, and it is what the deploy gate
+should be read from:
+
+```bash
+cd /home/user/ALO-LEARNING-JOURNEY-PRODUCTION
+ADMIN_EMAIL="…" ADMIN_PASSWORD="…" npm run verify:live
+# or against the public URL: npm run verify:live -- --url=https://learn.alolabs.net
+```
+
+It exits 0 only when `/api/health` is 200 with a real 40-hex `releaseSha`, and —
+when credentials are supplied — when the sign-in produced a session that an
+owner-only route actually accepts. `degraded` passes by contract; `unhealthy`
+does not. On a failure it prints the containing fix command. (Passwords are read
+from the environment or an interactive prompt and are never echoed.)
+
+The equivalent by hand:
+
 ```bash
 # local
 curl -sS -i http://127.0.0.1:3061/api/health
