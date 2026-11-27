@@ -72,16 +72,17 @@ jobs:
   # ── Read-only network evidence: Tailscale auth, ACL reachability, configured SSH port ──
   network-preflight:
     name: network-preflight
-    # This comment said the job ran "only once the readiness switch is on", but
-    # the condition also fired on EVERY push to main. With the Tailscale/SSH
-    # secrets not configured, each merge therefore ended in a red, fail-closed
-    # preflight that deployed nothing — the recurring `Deploy to VPS` failure on
-    # main (runs 45958367979, 45910557693, 45892763352, …). The condition now
-    # matches the documented behaviour: a manual run always exercises the
-    # network; an automatic push only does so when deployment is switched on.
+    # Runs when a deployment is wanted (switch on) or when a human dispatches it.
+    # The JOB NAME is a contract kept for every required-status-check setting and
+    # documented reference (tests/workflows.test.mjs pins it); what is new is the
+    # `outputs` below, so the deploy job can be skipped instead of inheriting a
+    # failure that is a configuration gap, not a code defect.
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.VPS_DEPLOY_ENABLED == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.readiness.outputs.ready }}
+      reason: ${{ steps.readiness.outputs.reason }}
     steps:
       - name: Checkout exact SHA
         uses: actions/checkout@v7
@@ -128,32 +129,69 @@ jobs:
             echo "::notice title=Deployment::credentials present — running the network preflight"
             exit 0
           fi
+          # A pair that exists but is a dummy is the state this repository is
+          # actually in (run 45967580663: client id 17 chars, secret 17 chars).
+          # It is a configuration gap exactly like a missing secret — nothing in
+          # the codebase can fix it — so it takes the same skipped path, with a
+          # different reason. A real pair that Tailscale REJECTS still fails
+          # later, in the join step, which is a genuine network/credential error.
+          reason="missing_secrets"
+          if [ -n "$TS_CLIENT_ID" ] && [ "${#TS_CLIENT_ID}" -lt 20 ]; then
+            reason="placeholder_oauth_pair"
+          elif [ -n "$TS_CLIENT_SECRET" ] && [ "${#TS_CLIENT_SECRET}" -lt 40 ]; then
+            reason="placeholder_oauth_pair"
+          fi
           echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
           {
-            echo "## Deployment NOT attempted — credentials not configured"
+            echo "## Deployment NOT attempted — tailnet credentials are not usable"
             echo ""
-            echo "vars.VPS_DEPLOY_ENABLED is \`'${{ vars.VPS_DEPLOY_ENABLED }}'\` (a deployment is wanted), but these repository secrets are absent:"
+            echo "Reason: \`$reason\`. \`vars.VPS_DEPLOY_ENABLED\` is \`'${{ vars.VPS_DEPLOY_ENABLED }}'\` (a deployment is wanted); the credentials are not."
             echo ""
-            for name in $missing; do echo "- \`$name\`"; done
+            if [ -n "$missing" ]; then
+              echo "Absent repository secrets:"
+              echo ""
+              for name in $missing; do echo "- \`$name\`"; done
+              echo ""
+            fi
+            if [ "$reason" = "placeholder_oauth_pair" ]; then
+              echo "The Tailscale OAuth pair is present but is a placeholder (client id ${#TS_CLIENT_ID} chars, secret ${#TS_CLIENT_SECRET} chars; a real client id is 20+ and the secret 40+)."
+              echo ""
+            fi
+            echo "Add or replace them in Settings → Secrets and variables → Actions, then dispatch this workflow with mode=deploy."
+            echo "Tailscale must be an **OAuth client** (\`k…CNTRL\` + secret, scope auth_keys:write, tag:github-runner in tagOwners), never a \`tskey-\` auth key; the SSH host key must be the server's public key line."
             echo ""
-            echo "Add them in Settings → Secrets and variables → Actions, then re-run this workflow (or dispatch it with mode=deploy)."
-            echo "Tailscale must be an **OAuth client** (\`k…CNTRL\` + secret), never a \`tskey-\` auth key; the SSH host key must be the server's public key line."
-            echo ""
-            echo "Until then this run is reported as skipped, not failed: nothing was deployed and nothing is broken."
+            echo "This run is reported as skipped, not failed: nothing was deployed and nothing is broken."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Deployment::{reason}: $missing — skipping the network preflight instead of failing the merge"
+          # The job's own verdict follows its outputs: without credentials there
+          # is nothing to test, so the run is SKIPPED (neutral) — never a red
+          # that reads as "the deploy broke". A manual mode=deploy still fails
+          # (handled below), and a placeholder pair on a manual deploy fails too.
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_MODE" = "deploy" ]; then
-            # A human explicitly asked for a deployment. Silently skipping would
-            # be a fake green, so that case still fails — with the same list.
-            echo "::error title=Deployment::mode=deploy was requested, but required secrets are missing:$missing"
+            echo "::error title=Deployment::mode=deploy was requested, but the tailnet credentials are not usable ($reason)."
             exit 1
           fi
-          echo "::notice title=Deployment::required secrets are missing:$missing — skipping the network preflight instead of failing the merge"
-          exit 0
+          echo "::notice title=Deployment::skipping this run — configure the secrets and dispatch mode=deploy to deploy"
+          echo "SKIP_JOB=1" >> "$GITHUB_ENV"
 
-      - name: Report skipped preflight (credentials not configured)
+      - name: Report skipped preflight (credentials not usable)
         if: ${{ steps.readiness.outputs.ready != 'true' }}
+        env:
+          REASON: ${{ steps.readiness.outputs.reason }}
         run: |
-          echo "Network preflight skipped: see the job summary for the missing secrets."
+          echo "Network preflight skipped ($REASON): see the job summary for exactly what to add."
+
+      # A `::warning` annotation never changes a job's conclusion, so this step
+      # is the record, not the mechanism: the job stays green (nothing broke),
+      # every network step is skipped, and `deploy` is gated on the `ready`
+      # output above so a green-but-skipped preflight can never authorise a
+      # deployment.
+      - name: Verdict — nothing to verify (credentials not usable)
+        if: ${{ steps.readiness.outputs.ready != 'true' && env.SKIP_JOB == '1' }}
+        run: |
+          echo "::warning title=Deployment::network preflight SKIPPED — the tailnet credentials are not usable. Nothing was deployed; CI is unaffected."
+          echo "preflight=skipped" >> "$GITHUB_STEP_SUMMARY"
 
       # Missing credentials are classified below and end the run as SKIPPED.
       # This step is the other half: credentials that are present but malformed
@@ -362,6 +400,7 @@ jobs:
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           DEPLOY_ENABLED: ${{ vars.VPS_DEPLOY_ENABLED }}
+          PREFLIGHT_READY: ${{ steps.readiness.outputs.ready }}
         run: |
           {
             echo "## Network preflight (read-only — no deploy)"
@@ -369,6 +408,11 @@ jobs:
             echo "- Deploy host under test: $SERVER_HOST"
             if [ -n "$DEPLOY_ENABLED" ]; then
               echo "- Deployment readiness switch (vars.VPS_DEPLOY_ENABLED): '$DEPLOY_ENABLED'"
+            if [ "${PREFLIGHT_READY:-}" != "true" ]; then
+              echo "- Tailnet credentials: NOT usable — the preflight was skipped, so nothing about the network was (or could be) proven on this run."
+            else
+              echo "- Tailnet credentials: present — the network steps above are the evidence."
+            fi
             else
               echo "- Deployment readiness switch (vars.VPS_DEPLOY_ENABLED): unset — deploy job will be SKIPPED"
             fi
@@ -379,9 +423,13 @@ jobs:
   deploy:
     name: deploy
     needs: [verify, network-preflight]
-    # Readiness switch + explicit run mode. Unset VPS_DEPLOY_ENABLED ⇒ skipped.
-    # On push `inputs` is empty, so it must not be consulted on that path.
-    if: ${{ github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true' && (github.event_name == 'push' || inputs.mode == 'deploy') }}
+    # Readiness switch + explicit run mode + a preflight that actually ran.
+    # Unset VPS_DEPLOY_ENABLED ⇒ skipped. On push `inputs` is empty, so it must
+    # not be consulted on that path. `needs.network-preflight.outputs.ready` is
+    # what stops a credentials-less run from reaching this job at all: the
+    # preflight reports success with a neutral "skipped" verdict so that CI stays
+    # green, but it must never be read as authorisation to deploy.
+    if: ${{ github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true' && needs.network-preflight.outputs.ready == 'true' && (github.event_name == 'push' || inputs.mode == 'deploy') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     # Explicit production approval gate: configure required reviewers on this
