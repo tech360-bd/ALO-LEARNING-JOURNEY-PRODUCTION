@@ -179,13 +179,18 @@ jobs:
           if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
             missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
           else
+            # A real Tailscale OAuth client id is ~20+ characters and ends in
+            # CNTRL; the secret is 40+ characters. Anything shorter is a
+            # placeholder, and the action's failure for it is the unhelpful
+            # "invalid key" — so report the shape, never the value (run
+            # 45965932281 had a 17/17-character pair and said only "too short").
             case "$TS_CLIENT_ID" in
               k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
               tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
-              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
+              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID})." ;;
             esac
-            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
-              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
+            if [ "${#TS_CLIENT_ID}" -lt 20 ] || [ "${#TS_CLIENT_SECRET}" -lt 40 ]; then
+              echo "::error title=Tailnet::the OAuth pair is a placeholder (client id ${#TS_CLIENT_ID} chars, secret ${#TS_CLIENT_SECRET} chars; a real client id is 20+ and the secret 40+). Replace BOTH secrets with the pair from https://login.tailscale.com/admin/settings/oauth (scopes: auth_keys write; tag: tag:github-runner in tagOwners). The placeholder join fails with \"invalid key\"."
               exit 1
             fi
           fi
@@ -327,14 +332,24 @@ jobs:
           # so "$HOME/..." would be a literal path. The script defaults to ~/.ssh/deploy_key.
         run: bash scripts/network-preflight.sh --tcp --ssh
 
+      # Only meaningful once the runner is on the tailnet. Run 45965932281 ran
+      # this while the join had been refused, and its "peers=0 / tcp:closed /
+      # ssh: connect timed out" annotations read like network outages instead of
+      # "we never joined, because the OAuth pair is a placeholder".
       - name: Network evidence (annotations, safe to fail)
-        if: always()
+        if: ${{ always() && steps.readiness.outputs.ready == 'true' }}
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
           SERVER_PORT: ${{ secrets.VPS_PORT }}
           VPS_USER: ${{ secrets.VPS_USER }}
+          TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
         run: |
           note() { echo "::notice title=Network::$(printf '%s' "$1" | tr '\n' ' ' | head -c 900)"; }
+          if [ "${#TS_CLIENT_ID}" -lt 20 ] || [ "${#TS_CLIENT_SECRET}" -lt 40 ]; then
+            note "skipped: the Tailscale OAuth pair is a placeholder (id ${#TS_CLIENT_ID} chars, secret ${#TS_CLIENT_SECRET} chars); nothing was joined, so there is no network evidence to collect"
+            exit 0
+          fi
           note "target=$SERVER_HOST port=${SERVER_PORT:-22}"
           note "peers=$(sudo -n tailscale status 2>/dev/null | wc -l) tailnet-host-visible=$(sudo -n tailscale status 2>/dev/null | grep -c "^$SERVER_HOST" || true)"
           note "ping: $(sudo -n tailscale ping -c 1 --timeout=5s "$SERVER_HOST" 2>&1 | head -2)"
@@ -396,13 +411,18 @@ jobs:
           if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
             missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
           else
+            # A real Tailscale OAuth client id is ~20+ characters and ends in
+            # CNTRL; the secret is 40+ characters. Anything shorter is a
+            # placeholder, and the action's failure for it is the unhelpful
+            # "invalid key" — so report the shape, never the value (run
+            # 45965932281 had a 17/17-character pair and said only "too short").
             case "$TS_CLIENT_ID" in
               k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
               tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
-              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
+              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID})." ;;
             esac
-            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
-              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
+            if [ "${#TS_CLIENT_ID}" -lt 20 ] || [ "${#TS_CLIENT_SECRET}" -lt 40 ]; then
+              echo "::error title=Tailnet::the OAuth pair is a placeholder (client id ${#TS_CLIENT_ID} chars, secret ${#TS_CLIENT_SECRET} chars; a real client id is 20+ and the secret 40+). Replace BOTH secrets with the pair from https://login.tailscale.com/admin/settings/oauth (scopes: auth_keys write; tag: tag:github-runner in tagOwners). The placeholder join fails with \"invalid key\"."
               exit 1
             fi
           fi

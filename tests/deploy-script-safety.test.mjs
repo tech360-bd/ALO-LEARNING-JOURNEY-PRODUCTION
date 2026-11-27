@@ -192,7 +192,11 @@ test("the tailnet join prefers the OAuth client and asserts membership afterward
   // The pair must exist and must not be a placeholder or an auth key.
   assert.match(workflow, /if \[ -z "\$TS_CLIENT_ID" \] \|\| \[ -z "\$TS_CLIENT_SECRET" \]; then/);
   assert.match(workflow, /tskey-\*\) echo "::error title=Tailnet/);
-  assert.match(workflow, /\$\{#TS_CLIENT_ID\}" -lt 10/);
+  // Raised from 10 to 20 characters after run 45965932281: a 17-character
+  // placeholder client id passed the old floor and only failed at the join.
+  assert.match(workflow, /\$\{#TS_CLIENT_ID\}" -lt 20/);
+  // The message must name the shape, never the value.
+  assert.match(workflow, /client id \$\{#TS_CLIENT_ID\} chars, secret \$\{#TS_CLIENT_SECRET\} chars/);
   // Both jobs assert the result of the action's join, and name the real cause.
   assert.match(workflow, /Assert the runner joined the tailnet/);
   assert.equal(workflow.match(/name: Assert the runner joined the tailnet/g)?.length, 2);

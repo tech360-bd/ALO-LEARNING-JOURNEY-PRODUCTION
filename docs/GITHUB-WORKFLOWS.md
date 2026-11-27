@@ -189,10 +189,40 @@ SMOKE_PORT=3096 SMOKE_HEALTH_EXPECT=honest SMOKE_EXPECT_AUTH=1 \
   NEXTAUTH_SECRET=… node scripts/verification/smoke-standalone.mjs   # 14/14
 ```
 
+## The last red run, diagnosed from its own annotations
+
+After the ordering fix, run **45965932281** (merge of #45) reached the guard — and
+the guard was right:
+
+```
+notice:  credentials present — running the network preflight
+notice:  OAuth client id looks like a Tailscale client id
+notice:  oauth-client-id-length=17 oauth-secret-length=17 auth-key-length=62
+failure: the OAuth pair looks too short (client id 17, secret 17)
+```
+
+So the secrets **exist** but are **placeholders**: a 17-character client id and a
+17-character secret, where a real Tailscale OAuth client id is 20+ characters
+(tailscale IDs end in `CNTRL`) and the secret is 40+. The join would fail with
+`invalid key`; the guard stops before that and says why. Nothing in code can fix a
+placeholder — only the owner can paste the real OAuth client.
+
+Two improvements came out of that run:
+
+- The message now names the exact shape ("client id 17 chars, secret 17 chars; a
+  real client id is 20+ and the secret 40+"), links the OAuth page and the
+  required scopes/tag, and the threshold was raised from 10/20 to 20/40
+  characters so a placeholder cannot look "long enough".
+- *Network evidence* no longer runs when the join was refused. Previously it
+  reported `peers=0 / tcp:closed / ssh: connect timed out` while the runner had
+  never joined, which reads like a network outage. It now says plainly that the
+  pair is a placeholder and there is no evidence to collect.
+
 ## What still needs a human
 
-1. **`vars.VPS_DEPLOY_ENABLED` is `'true'`, but the deploy credentials are not
-   set.** That is why the preflight used to fail (see §1) and why `deploy` is
+1. **`vars.VPS_DEPLOY_ENABLED` is `'true'` and the deploy secrets are
+   placeholders, not real credentials** (client id and secret both 17
+   characters — see the run above). That is why the preflight used to fail (see §1) and why `deploy` is
    still `skipped`. To actually deploy, add (they cannot be read by this token,
    which is why their absence is inferred from the step that fails):
    `TAILSCALE_OAUTH_CLIENT_ID` + `TAILSCALE_OAUTH_SECRET` (OAuth client, not a
