@@ -52,35 +52,48 @@ whose cause is fixed below.
 
 ## What was broken (and is now fixed)
 
-### 1. `Deploy to VPS` failed on every merge to `main`
+### 1. `Deploy to VPS` failed on every merge to `main` — fixed
 
 `network-preflight` is a **fail-closed** job: its third step exits when the
 Tailscale/SSH secrets are absent. Its own comment claimed it ran *"only once the
-readiness switch is on"*, but the `if:` also matched every push:
+readiness switch is on"*, but the `if:` also matched every push — and unlike the
+first assumption in this audit, `vars.VPS_DEPLOY_ENABLED` really **is** `'true'`:
+the job runs on every push (so `network-preflight` passed its `if:`), while
+`deploy` is `skipped` (it also needs the `verify` job and the approval gate). The
+secrets are the part that is missing, so the job died in *Fail closed if
+networking secrets are missing* on every merge:
 
-```yaml
-# before — preflight ran on every push, with deployment switched off
-if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.VPS_DEPLOY_ENABLED == 'true')
-```
+| Run | Date | Failing step |
+| --- | --- | --- |
+| 45963030024 | 2026-11-27 | Fail closed if networking secrets are missing |
+| 45958367979 | 2026-11-27 | same |
+| 45953077679 | 2026-11-27 | same |
+| 45910557693 | 2026-11-26 | same |
+| 45892763352 | 2026-11-26 | same |
+| 45882882574 | 2026-11-26 | *Join tailnet (explicit, full error output)* |
 
-`vars.VPS_DEPLOY_ENABLED` is unset in this fork (the API token cannot read
-variables, but the job footprint proves it: the switch is what gates `deploy`,
-and `deploy` has been `skipped` in all 57 runs while `network-preflight` failed in
-each). So every merge produced a red `Deploy to VPS` run:
+The switch means *"a deployment is wanted"*. It never meant *"this repository can
+authenticate"*. Two changes make the two questions separate:
 
-| Run | Date | Failing job | Failing step |
-| --- | --- | --- | --- |
-| 45958367979 | 2026-11-27 | `network-preflight` | *Fail closed if networking secrets are missing* |
-| 45953077679 | 2026-11-27 | `network-preflight` | same |
-| 45910557693 | 2026-11-26 | `network-preflight` | same |
-| 45892763352 | 2026-11-26 | `network-preflight` | same |
-| 45882882574 | 2026-11-26 | `network-preflight` | *Join tailnet (explicit, full error output)* |
+1. A read-only **`Classify deployment readiness`** step (`id: readiness`) asks
+   whether the OAuth pair, the host and the pinned SSH material are all present,
+   and writes `ready=true|false` to `$GITHUB_OUTPUT`. When they are absent it
+   writes the exact missing list to the **job summary** and the run continues.
+2. Every Tailscale/SSH step is gated on `steps.readiness.outputs.ready == 'true'`,
+   so an unconfigured repository is reported as **skipped-until-configured**, not
+   as a deployment failure. A merge to `main` therefore stops showing a red
+   `Deploy to VPS` that deployed nothing.
 
-Fix: the preflight now requires the switch on an automatic push, and still
-always runs when a human dispatches it. Nothing about the deploy path's safety
-changed — `deploy` still requires `VPS_DEPLOY_ENABLED`, the `production`
-environment approval, and a green `verify`. The regression is pinned by a test
-(`a merge with deployment switched off cannot produce a red preflight`).
+Fail-closed is unchanged where it matters: a credential that is **present but
+malformed** still fails hard (a `tskey-` auth key instead of an OAuth client, a
+too-short pair, a malformed host key), and **`workflow_dispatch` with
+`mode=deploy` still fails loudly** — a human who explicitly asked for a
+deployment must never get a silent skip. `deploy` still requires the switch, the
+`production` approval and a green `verify`.
+
+Pinned by two tests: *a merge with deployment switched off cannot produce a red
+preflight* and *the preflight skips (not fails) when the switch is on but
+credentials are absent*.
 
 ### 2. The standalone smoke test was silently mis-wired
 
@@ -167,8 +180,10 @@ SMOKE_PORT=3096 SMOKE_HEALTH_EXPECT=honest SMOKE_EXPECT_AUTH=1 \
 
 ## What still needs a human
 
-1. **`vars.VPS_DEPLOY_ENABLED` is unset**, so production deploys are skipped by
-   design. Turning it on is a separate decision; the workflow then requires
+1. **`vars.VPS_DEPLOY_ENABLED` is `'true'`, but the deploy credentials are not
+   set.** That is why the preflight used to fail (see §1) and why `deploy` is
+   still `skipped`. To actually deploy, add (they cannot be read by this token,
+   which is why their absence is inferred from the step that fails):
    `TAILSCALE_OAUTH_CLIENT_ID` + `TAILSCALE_OAUTH_SECRET` (OAuth client, not a
    `tskey-` auth key), `SERVER_HOST`/`VPS_USER`/`VPS_SSH_KEY`/`VPS_SSH_HOST_KEY`,
    and required reviewers on the `production` environment.
