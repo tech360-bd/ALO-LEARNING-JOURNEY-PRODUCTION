@@ -169,7 +169,7 @@ jobs:
             echo ""
             echo "This run is reported as skipped, not failed: nothing was deployed and nothing is broken."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=Deployment::{reason}: $missing — skipping the network preflight instead of failing the merge"
+          echo "::notice title=Deployment::$reason ${missing:-placeholder pair} — skipping the network preflight instead of failing the merge"
           # The job's own verdict follows its outputs: without credentials there
           # is nothing to test, so the run is SKIPPED (neutral) — never a red
           # that reads as "the deploy broke". A manual mode=deploy still fails
