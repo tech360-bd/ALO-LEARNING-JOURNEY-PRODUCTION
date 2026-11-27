@@ -30,7 +30,8 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { chmod, writeFile } from "node:fs/promises";
-import { cookiePairs, isSecureSessionCookie, toNetscapeJar } from "./cookie-jar.mjs";
+import { cookiePairs, toNetscapeJar } from "./cookie-jar.mjs";
+import { judgeHealth, judgeReleaseSha, judgeJarReplayable } from "./live-rules.mjs";
 
 const args = new Map(
   process.argv
@@ -86,20 +87,18 @@ async function ask(question, envValue) {
 /** Health gate: 200 + a real release SHA. `degraded` is a pass, by contract. */
 async function checkHealth() {
   const res = await call("/api/health");
-  const body = res.body ?? {};
-  const status = String(body.status ?? "");
-  const sha = String(body.releaseSha ?? "");
-  const okStatus = res.status === 200 && ["healthy", "degraded"].includes(status);
+  const verdict = judgeHealth(res);
+  const release = judgeReleaseSha(res.body?.releaseSha);
   record(
     "GET /api/health",
-    okStatus,
-    `HTTP ${res.status} status=${status || "?"} releaseSha=${sha.slice(0, 12) || "?"}`,
+    verdict.ok,
+    verdict.detail,
     `Not 200/healthy. Run: curl -sS ${BASE}/api/health/diagnose | jq '.summary, .findings[]|select(.ok==false)'`
   );
   record(
     "releaseSha is a real 40-hex commit",
-    /^[0-9a-f]{40}$/.test(sha),
-    sha || "(empty)",
+    release.ok,
+    release.detail,
     "Set RELEASE_SHA in the PM2 environment, or rebuild so scripts/write-release-sha.mjs writes .next/standalone/RELEASE_SHA, then: pm2 restart <app> --update-env"
   );
   record(
@@ -108,7 +107,7 @@ async function checkHealth() {
     "",
     "Check the Next.js process and the reverse proxy upstream for this port."
   );
-  return { status, sha };
+  return { status: res.body?.status ?? "", sha: release.sha };
 }
 
 /** NextAuth credentials sign-in, exactly as the browser does it. */
@@ -141,8 +140,8 @@ async function checkAuth() {
   // `__Secure-` cookies are only ever sent over TLS, so a session minted by a
   // plain-http probe cannot be replayed with a cookie jar. Say so instead of
   // writing a jar that looks fine and authenticates nothing.
-  const secureSessionOnly = jar.some((pair) => isSecureSessionCookie(pair.split("=")[0]));
-  if (secureSessionOnly && new URL(BASE).protocol !== "https:") {
+  const jarVerdict = judgeJarReplayable({ origin: BASE, cookieNames: jar.map((p) => p.split("=")[0]) });
+  if (!jarVerdict.ok) {
     note(
       "\n!  This session is HTTPS-only (the app mints __Secure- cookies in production),\n" +
         "   so `curl -b <jar>` over this plain-http origin would be unsigned and rejected.\n" +
@@ -162,7 +161,7 @@ async function checkAuth() {
   );
   if (ok) {
     const jarPath = args.get("jar");
-    if (jarPath && jarPath !== "true" && secureSessionOnly && new URL(BASE).protocol !== "https:") {
+    if (jarPath && jarPath !== "true" && !jarVerdict.ok) {
       record(
         "session saved as a curl cookie jar",
         false,

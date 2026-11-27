@@ -61,21 +61,22 @@ test("verify:live never echoes the password it was given", async () => {
   assert.ok(!out.includes("owner@example.test") || !/password/i.test(out));
 });
 
-test("verify:live documents the health contract it enforces", async () => {
+test("verify:live enforces the health contract through the tested rules", async () => {
+  // The verdicts moved to scripts/verification/live-rules.mjs so they can be
+  // pinned without a server; the script must actually call them, or the rules
+  // would be documentation rather than behaviour.
   const source = await readFile(new URL(SCRIPT, `file://${ROOT}`), "utf8");
-  // `degraded` must pass: the deploy contract says optional checks failing is a
-  // 200, and a script that demanded "healthy" would fail a correct deploy.
-  assert.match(source, /\["healthy", "degraded"\]\.includes\(status\)/);
-  assert.match(source, /res\.status === 200/);
-  // A real release identity is part of the gate, not decoration.
-  assert.match(source, /\^\[0-9a-f\]\{40\}\$/);
+  assert.match(source, /from "\.\/live-rules\.mjs"/);
+  assert.match(source, /judgeHealth\(res\)/);
+  assert.match(source, /judgeReleaseSha\(res\.body\?\.releaseSha\)/);
+  assert.match(source, /judgeJarReplayable\(/);
 });
 
 test("verify:live refuses to save an unusable http jar for an https-only session", async () => {
   const source = await readFile(new URL(SCRIPT, `file://${ROOT}`), "utf8");
   // A __Secure- session cookie cannot be replayed over plain http, so the jar
-  // must not be written there with a reassuring "saved" line.
-  assert.match(source, /isSecureSessionCookie/);
+  // must not be written there with a reassuring "saved" line. The rule lives in
+  // live-rules.mjs; here we assert the script gates on it before writing.
   assert.match(source, /an HTTPS-only session cookie cannot be replayed over plain http/);
-  assert.match(source, /new URL\(BASE\)\.protocol !== "https:"/);
+  assert.match(source, /if \(jarPath && jarPath !== "true" && !jarVerdict\.ok\)/);
 });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requireOwner } from "@/lib/auth";
 import { handleSuperAdminMessage } from "@/lib/super-admin/chat";
+import { verifyAnswer, type VerifyCheck } from "@/lib/agent-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,6 +74,31 @@ export async function POST(req: NextRequest) {
 
   // Every turn is a persistent run; the runId is returned for the timeline.
   const turn = await handleSuperAdminMessage(conversationId, message, g.ownerId);
+
+  // Self-verification. A chat reply that cites a URL is only trustworthy if the
+  // URL loads, and an admin acting on "it worked" needs that checked before the
+  // answer is returned — not after. The browse step goes through the SSRF-guarded
+  // browser module, so a link to a private address is reported, never fetched.
+  // `?verify=0` exists for a caller that already verified or is air-gapped.
+  const shouldVerify = req.nextUrl.searchParams.get("verify") !== "0";
+  let verification: Awaited<ReturnType<typeof verifyAnswer>> | undefined;
+  if (shouldVerify && typeof turn.reply === "string" && turn.reply.length > 0) {
+    const checks: VerifyCheck[] = [
+      {
+        id: "reply_not_empty",
+        description: "the reply says something actionable",
+        test: (answer) => answer.trim().length >= 2,
+      },
+    ];
+    verification = await verifyAnswer({ answer: turn.reply, checks }).catch((error) => ({
+      ok: false,
+      checkedAt: new Date().toISOString(),
+      checks: [],
+      browsed: [],
+      failures: [{ id: "verification", kind: "check" as const, detail: String((error as Error)?.message ?? error) }],
+      repaired: false,
+    }));
+  }
   try {
     await db.auditLog.create({
       data: { actor: "SuperAdmin", action: "superadmin.chat", detail: `${message.slice(0, 150)} → run=${turn.runId}`, severity: "info" },
@@ -80,5 +106,5 @@ export async function POST(req: NextRequest) {
   } catch {
     // audit is best-effort
   }
-  return NextResponse.json({ conversationId, ...turn });
+  return NextResponse.json({ conversationId, ...turn, verification });
 }
