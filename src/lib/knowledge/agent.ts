@@ -91,12 +91,15 @@ export function sourceReport(query?: string): string {
     query && matched.length === 1
       ? `1 source (licences checked 2026-11-27; ${summary.total} in the index)`
       : `${shown.length} sources (licences checked 2026-11-27)`;
+  const gated = shown.filter((source) => source.adoption === "integrated-tools");
   const showsIntegrated = shown.some((source) => source.adoption === "integrated");
   return [
     `Knowledge index: ${scope}.`,
     showsIntegrated
       ? `Integrated: ${summary.integrated.join(", ") || "none"}. Usable today: ${summary.usableToday.join(", ")}.`
-      : "Integrated here: not this source — nothing from it is wired into the app.",
+      : gated.length
+        ? "Integrated as an owner-gated tool surface — off until the owner enables it and approves a paid call."
+        : "Integrated here: not this source — nothing from it is wired into the app.",
     "",
     "Rejected, with the reason (so it is not re-litigated):",
     ...(rejected.length ? rejected : ["- none"]),
