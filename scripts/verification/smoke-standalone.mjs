@@ -1,27 +1,51 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
 
 /**
  * Boots the built standalone server, replays a sign-in, and probes routes.
  *   node scripts/verification/smoke-standalone.mjs [--json]
  * Prints a table and exits non-zero if any probe fails.
+ *
+ * Environment:
+ *   SMOKE_PORT             port to bind (default 3095)
+ *   SMOKE_HEALTH_EXPECT    "serving" (default, needs a database ⇒ 200) or
+ *                          "honest" (no database assumed ⇒ 200 or a truthful 503)
+ *   SMOKE_ADMIN_EMAIL / SMOKE_ADMIN_PASSWORD   credentials for the sign-in probe
+ *   SMOKE_EXPECT_AUTH=1    also require an unauthenticated 401 on /api/approvals
+ *   ADMIN_* / NEXTAUTH_* / DATABASE_URL / ALO_* / VAULT_* / provider keys
+ *                          are forwarded to the child server (see INHERITED).
  */
 const PORT = Number(process.env.SMOKE_PORT ?? 3095);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const BASE = `${process.cwd()}/.next/standalone`;
 const jsonMode = process.argv.includes("--json");
 
-const server = spawn(process.execPath, ["server.js"], {
-  cwd: BASE,
+// Credentials must reach the CHILD process: the probes read them from this
+// process, but the sign-in is performed by the spawned server. Before this was
+// forwarded, SMOKE_ADMIN_EMAIL/PASSWORD were silently dropped and the sign-in
+// probe reported `<none>` no matter what the operator set.
+const CHILD_ENV = {
   // `SMOKE_NODE_ENV=development` exercises the documented JSON fallback, which
   // is how the 200/"degraded" path can be proven without a MySQL server. In
   // production a missing database is correctly a 503.
-  env: {
-    PATH: process.env.PATH,
-    NODE_ENV: process.env.SMOKE_NODE_ENV ?? "production",
-    PORT: String(PORT),
-    HOSTNAME: "127.0.0.1",
-  },
+  NODE_ENV: process.env.SMOKE_NODE_ENV ?? "production",
+  PORT: String(PORT),
+  HOSTNAME: "127.0.0.1",
+};
+const INHERITED = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  ...Object.keys(process.env).filter((k) =>
+    /^(ADMIN_|NEXTAUTH_|DATABASE_URL$|VAULT_|ALO_|SMTP_|OLLAMA_|GROQ_|OPENROUTER_|LLM7_|OPENCODE_|OMNIROUTE_|LITELLM_|LIBRECHAT_|HTTPSMS_|RELEASE_SHA$|GIT_SHA$)/.test(k),
+  ),
+];
+const childEnv = { ...CHILD_ENV };
+for (const key of INHERITED) if (process.env[key] !== undefined) childEnv[key] = process.env[key];
+
+const server = spawn(process.execPath, ["server.js"], {
+  cwd: BASE,
+  env: childEnv,
   stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "";
@@ -100,18 +124,48 @@ if (!up) {
 
 try {
   // 1. public health
+  //
+  // `SMOKE_HEALTH_EXPECT` decides what "correct" means here:
+  //   serving (default) — a database is available, so 200 healthy/degraded;
+  //   honest            — no database is assumed: 200 healthy/degraded OR 503
+  //                       status=unhealthy is accepted, a 500 or a 200 that
+  //                       claims "healthy" while the database is down is not.
+  // CI uses `honest` because whether the service container is reachable from
+  // the standalone process is not something this script can assume.
+  const healthExpect = process.env.SMOKE_HEALTH_EXPECT === "honest" ? "honest" : "serving";
   const health = await request("/api/health");
   const healthBody = parse(health.text) ?? {};
+  const healthStatus = String(healthBody.status ?? "");
+  const healthOk =
+    health.status === 200 && ["healthy", "degraded"].includes(healthStatus)
+      ? true
+      : healthExpect === "honest" && health.status === 503 && healthStatus === "unhealthy";
   record(
     "GET /api/health",
-    health.status === 200 && ["healthy", "degraded"].includes(healthBody.status),
-    `HTTP ${health.status} status=${healthBody.status} releaseSha=${healthBody.releaseSha} release=${healthBody.release}`,
+    healthOk,
+    `HTTP ${health.status} status=${healthStatus || "?"} releaseSha=${healthBody.releaseSha} release=${healthBody.release} (expected=${healthExpect})`,
   );
+  let headSha = null;
+  try {
+    headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim();
+  } catch {
+    // Not a git checkout (tarball build): nothing to compare against.
+  }
   record(
     "health carries a real release SHA",
     /^[0-9a-f]{40}$/.test(String(healthBody.releaseSha)),
     `releaseSha=${healthBody.releaseSha} (source=${healthBody.release ? "resolved" : "unresolved"})`,
   );
+  // The marker is written by `npm run build`. Rebuilding without it (or reusing
+  // an older .next) leaves a SHA that is real but not this commit — a stale
+  // release, which is worth failing over rather than hiding.
+  if (headSha) {
+    record(
+      "release SHA matches the checked-out commit",
+      String(healthBody.releaseSha) === headSha,
+      `built=${healthBody.releaseSha ?? "<none>"} checkout=${headSha}${String(healthBody.releaseSha) === headSha ? "" : " — rebuild with RELEASE_SHA set (npm run build does this)"}`,
+    );
+  }
 
   // 2. login page + csrf
   const login = await request("/login");
