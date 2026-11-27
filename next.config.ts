@@ -38,6 +38,27 @@ const nextConfig: NextConfig = {
   // server bundle so builds work on the x86-64-v1 VPS CPU (no SSE4.2).
   // tests/image-processing.test.mjs guards this line.
   serverExternalPackages: ["sharp"],
+  // ── Keep the standalone artifact to what the server actually needs ───────
+  // `src/lib/runtime-config.ts` reads its JSON with a computed path, so Next's
+  // tracer conservatively includes the whole project root — the artifact grew to
+  // ~271 MB and shipped `tests/`, `docs/`, `audit/`, `marketingos/` and the local
+  // `storage/`/`upload/` media to production.
+  //
+  // Excluded here are only paths that the build or the deploy script copies in
+  // its own, correct way:
+  //   docs|tests|audit|worklog|examples|tool-results → never needed at runtime
+  //   .next/**                                       → the static chunks are copied by `npm run build`
+  //   public/**                                      → copied by `npm run build` (cp -r public)
+  //   storage/**|upload/**|download/**               → runtime media, must never be baked into a release
+  // Nothing on a request path lives in those directories, and the standalone
+  // smoke test boots the server to prove it.
+  outputFileTracingExcludes: {
+    // `.next/**` is deliberately NOT excluded: Turbopack emits runtime chunks
+    // under `.next/server/chunks/` that the tracer must keep, and excluding them
+    // shipped a server that answered 500 ("Cannot find module … [turbopack]_runtime.js").
+    // Verified by booting the standalone server after every build.
+    "*": ["public/**", "storage/**", "upload/**", "download/**", "docs/**", "tests/**", "audit/**", "marketingos/**", "examples/**", "tool-results/**", "worklog.md"],
+  },
   // Dev-server only: hosts allowed to load /_next assets during `next dev`.
   allowedDevOrigins: ["127.0.0.1", "localhost", "21.0.4.113", "103.231.239.79", "marketing.alolabs.net"],
 };

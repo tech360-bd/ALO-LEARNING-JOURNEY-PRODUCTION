@@ -129,7 +129,21 @@ export default function AnnouncementsView() {
     method: "POST",
     path: "/api/announcements",
     onSuccess: () => {
-      toast.success(editId ? "Announcement updated" : "Announcement created");
+      toast.success("Announcement created");
+      setCreateOpen(false);
+      resetForm();
+      refetch();
+    },
+    onError: (err) => toast.error(err),
+  });
+
+  // Editing is a PATCH: /api/announcements/[id] exports PATCH and DELETE only.
+  // Reusing createMutation here sent a POST to that path and the route answered
+  // 405, so "Save" silently did nothing.
+  const editMutation = useApiMutation({
+    method: "PATCH",
+    onSuccess: () => {
+      toast.success("Announcement updated");
       setCreateOpen(false);
       resetForm();
       refetch();
@@ -175,11 +189,11 @@ export default function AnnouncementsView() {
       targetRoles: formTargetRoles,
     };
     if (editId) {
-      createMutation.mutate(payload, `/api/announcements/${editId}`);
+      editMutation.mutate(payload, `/api/announcements/${editId}`);
     } else {
       createMutation.mutate(payload);
     }
-  }, [formTitle, formContent, formPriority, formTargetRoles, editId, createMutation]);
+  }, [formTitle, formContent, formPriority, formTargetRoles, editId, createMutation, editMutation]);
 
   const handleDelete = useCallback(
     (id: string) => {

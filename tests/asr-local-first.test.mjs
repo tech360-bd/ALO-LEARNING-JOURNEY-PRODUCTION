@@ -40,8 +40,20 @@ test("raw provider and JSON errors are never returned to the browser", async () 
   const source = await read(ROUTE);
   assert.doesNotMatch(source, /error: \(e as Error\)\.message/);
   assert.doesNotMatch(source, /error: \(asrErr as Error\)\.message/);
-  assert.match(source, /error: parseFailure \? "invalid_request_body" : "asr_failed"/);
+  // Three distinct causes, three distinct answers: a bad body is the caller's
+  // fault (400), an unreachable database and a dead engine are both "a
+  // dependency is down, not this route" (503). The classifier is asserted here
+  // because the ordering — database before parse — is what stops a DB outage
+  // being reported as a malformed payload.
+  assert.match(
+    source,
+    /error: parseFailure \? "invalid_request_body" : databaseFailure \? "database_unavailable" : "asr_failed"/,
+  );
+  assert.match(source, /const parseFailure = !databaseFailure &&/);
   assert.match(source, /Send JSON: \{ audioBase64, format, fileName\?, language\? \}\./);
+  // 500 is never a correct answer from this route: the body is validated before
+  // anything else, and everything after it is a dependency failure.
+  assert.doesNotMatch(source, /status: 500/);
 });
 
 test("the engine chain still prefers local daemons before the cloud fallback", async () => {

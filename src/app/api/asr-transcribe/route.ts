@@ -16,6 +16,18 @@ import { getAsrProviderStatus, transcribe } from "@/lib/asr-engine";
  * returned to the browser as a 500.
  */
 
+/**
+ * Is this error the database, or the speech engine?
+ *
+ * They are different operator actions — "restart MySQL / check DATABASE_URL" vs
+ * "start the ASR daemon" — but both used to surface as a bare 500 `asr_failed`
+ * with a question mark in the message. On the server that hides a database
+ * outage behind a speech feature.
+ */
+function isDatabaseFailure(message: string): boolean {
+  return /prisma|did not initialize|database|ECONNREFUSED|ETIMEDOUT|P1001|P1002|P1017|Can't reach database/i.test(message);
+}
+
 const SUPPORTED_FORMATS = ['wav', 'mp3', 'm4a', 'flac', 'ogg'];
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
@@ -41,8 +53,16 @@ export async function GET() {
       supportedFormats: SUPPORTED_FORMATS,
       maxFileSize: MAX_FILE_SIZE,
     });
-  } catch {
-    return NextResponse.json({ error: "transcription_list_failed" }, { status: 500 });
+  } catch (e) {
+    // Reading the history is a database read only — report that dependency.
+    return NextResponse.json(
+      {
+        error: "transcription_list_failed",
+        message: "The transcription history could not be read: the database is unreachable.",
+        detail: e instanceof Error ? e.message.slice(0, 200) : undefined,
+      },
+      { status: 503 },
+    );
   }
 }
 
@@ -88,15 +108,30 @@ export async function POST(req: NextRequest) {
     }
 
     // create pending record
-    const record = await db.audioTranscription.create({
-      data: {
-        fileName,
-        fileSize: fileSize || approxSize,
-        format: lowerFormat,
-        language,
-        status: 'pending',
-      },
-    });
+    let record: { id: string };
+    try {
+      record = await db.audioTranscription.create({
+        data: {
+          fileName,
+          fileSize: fileSize || approxSize,
+          format: lowerFormat,
+          language,
+          status: 'pending',
+        },
+      });
+    } catch (dbError) {
+      // No row means no job: say so plainly instead of failing as `asr_failed`.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: 'database_unavailable',
+          message: 'Could not record the transcription job: the database is unreachable. Check DATABASE_URL and that MySQL is running.',
+          providers: getAsrProviderStatus(),
+          detail: dbError instanceof Error ? dbError.message.slice(0, 200) : undefined,
+        },
+        { status: 503 },
+      );
+    }
 
     try {
       const cleanBase64 = audioBase64.replace(/^data:audio\/\w+;base64,/, "");
@@ -168,35 +203,64 @@ export async function POST(req: NextRequest) {
         segments: result.segments,
         transcriptUrl: `/asr-output/transcript_${record.id}.txt`,
       });
-    } catch {
+    } catch (engineError) {
+      const detail = engineError instanceof Error ? engineError.message : String(engineError);
       // The provider message stays in the row for the operator; the response
       // says what the caller can act on.
-      await db.audioTranscription.update({
-        where: { id: record.id },
-        data: { status: "failed", errorMessage: "transcription provider error" },
-      });
+      await db.audioTranscription
+        .update({
+          where: { id: record.id },
+          data: { status: "failed", errorMessage: "transcription provider error" },
+        })
+        .catch(() => undefined);
+
+      if (isDatabaseFailure(detail)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: "database_unavailable",
+            id: record.id,
+            message: "Transcription could not be stored: the database became unreachable.",
+            providers: getAsrProviderStatus(),
+          },
+          { status: 503 },
+        );
+      }
+      // An engine that is absent or broken is a degraded capability (503), not an
+      // internal error (500): the request was valid, the service is not ready.
       return NextResponse.json(
-        { ok: false, error: "asr_failed", id: record.id, message: "Transcription failed. Check the server log for the provider error." },
-        { status: 500 },
+        {
+          ok: false,
+          error: "asr_failed",
+          id: record.id,
+          message: "The ASR engine failed to transcribe this audio. Start the local daemon (FASTER_WHISPER_URL) and retry.",
+          providers: getAsrProviderStatus(),
+        },
+        { status: 503 },
       );
     }
   } catch (e) {
     // Never forward a provider/JSON parse message to the browser; it is noise
     // for the operator and detail for an attacker. A malformed body is a 400;
-    // anything that happens after validation (database unavailable, engine
-    // crash) is a 500 — reporting it as "invalid body" sent callers chasing
-    // their own payload.
+    // anything that happens after validation is a 503 (database unreachable or
+    // engine crash) — reporting it as "invalid body" sent callers chasing their
+    // own payload, and a 500 implied this server was broken when the real fault
+    // was a dependency being down.
     const message = e instanceof Error ? e.message : String(e);
-    const parseFailure = /JSON|Unexpected token|Unexpected end of/i.test(message) && !/prisma|database|did not initialize/i.test(message);
+    const databaseFailure = isDatabaseFailure(message);
+    const parseFailure = !databaseFailure && /JSON|Unexpected token|Unexpected end of/i.test(message);
     return NextResponse.json(
       {
         ok: false,
-        error: parseFailure ? "invalid_request_body" : "asr_failed",
+        error: parseFailure ? "invalid_request_body" : databaseFailure ? "database_unavailable" : "asr_failed",
         message: parseFailure
           ? "Send JSON: { audioBase64, format, fileName?, language? }."
-          : "Transcription failed before reaching an engine. Check the server log (database reachable ?).",
+          : databaseFailure
+            ? "The transcription job could not be created: the database is unreachable. Check DATABASE_URL and that MySQL is running."
+            : "Transcription failed before reaching an engine.",
+        providers: getAsrProviderStatus(),
       },
-      { status: parseFailure ? 400 : 500 },
+      { status: parseFailure ? 400 : 503 },
     );
   }
 }
