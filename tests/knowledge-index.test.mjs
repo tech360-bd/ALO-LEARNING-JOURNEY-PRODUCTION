@@ -89,7 +89,10 @@ test("the report names the licence and the prohibition for every source", () => 
   assert.match(report, /Rejected, with the reason/i);
   assert.match(report, /2026-11-27/, "the report must state when the facts were checked");
   // Every row is a table row with the licence column filled.
-  assert.equal(report.split("\n").filter((line) => /^\| .* \| (integrated|service|pattern|reference-only|rejected) \| /.test(line)).length, KNOWLEDGE_SOURCES.length);
+  assert.equal(
+    report.split("\n").filter((line) => /^\| .* \| (integrated|integrated-tools|service|pattern|reference-only|rejected) \| /.test(line)).length,
+    KNOWLEDGE_SOURCES.length,
+  );
 });
 
 test("'add these repos as knowledge' routes to the index, not to a single link", () => {
@@ -115,6 +118,20 @@ test("a narrowed answer counts only what it shows", () => {
   assert.equal(single.split("\n").filter((line) => /^\| Open WebUI \|/.test(line)).length, 1);
   assert.doesNotMatch(single, /\| LiteLLM \|/, "other sources must not appear in a narrowed answer");
   assert.doesNotMatch(single, /^Integrated: /m, "a rejected source must not inherit the integrated banner");
+});
+
+test("Monid is wired as a gated tool surface, not as a chat model", () => {
+  const monid = findSource("monid");
+  assert.equal(monid?.adoption, "integrated-tools");
+  assert.match(String(monid?.mustNot), /never call run without an owner approval/i);
+  const summary = knowledgeSummary();
+  assert.deepEqual(summary.gated, ["monid"]);
+  // It must not be offered as "usable today" — it is off until the owner opts in.
+  assert.equal(summary.usableToday.includes("monid"), false);
+  const single = sourceReport("monid");
+  assert.match(single, /owner-gated tool surface/);
+  assert.match(single, /off until the owner enables it/);
+  assert.doesNotMatch(single, /^Integrated: litellm/m, "a gated source must not inherit the LLM banner");
 });
 
 test("agent guidance covers the three questions the owner actually asks", () => {

@@ -34,6 +34,8 @@ export type Adoption =
   | "service"
   /** Already wired: speaks the OpenAI chat-completions protocol. */
   | "integrated"
+  /** Wired as an owner-gated tool surface (not a chat model). */
+  | "integrated-tools"
   /** Read as documentation only; no code, no data copied. */
   | "reference-only"
   /** Deliberately not adopted; the reason is recorded so it is not re-litigated. */
@@ -140,10 +142,11 @@ export const KNOWLEDGE_SOURCES: KnowledgeSource[] = [
     url: `${GH}/monid-ai/monid`,
     kind: "agent-tools",
     facts: { spdx: "MIT", stars: 5683, archived: false, lastPush: "2026-11-17T00:37:15Z", language: "TypeScript" },
-    adoption: "reference-only",
-    mayUse: "Read the connector schema to learn how one catalogue describes 2,000+ tools across 72+ providers; MIT allows copying that schema with attribution.",
-    mustNot: "Do not call monid.ai from this app: it is a metered third-party service, and a paid dependency needs the owner's explicit switch.",
-    agentUse: "Answer catalogue questions from this index. If the owner later approves a key, it becomes an owner-gateway variable — never code.",
+    adoption: "integrated-tools",
+    mayUse: "discover/inspect (free) and approval-gated run, wired in src/lib/monid.ts; the MIT connector schema was the source for src/lib/monid-catalog.ts.",
+    mustNot: "Never present it as a chat model and never call run without an owner approval — every run spends the owner's Monid balance.",
+    agentUse: "Ask 'what can monid tools do' for the local catalogue (no key needed). discover/inspect need ALO_MONID_ENABLED + MONID_API_KEY; run also needs both AI switches and an approval.",
+    configEnv: ["ALO_MONID_ENABLED", "MONID_API_KEY", "MONID_BASE_URL"],
     licenceNote: "MIT for the connector layer; using the hosted service is billed per call.",
   },
   {
@@ -314,5 +317,7 @@ export function knowledgeSummary() {
     rejected: KNOWLEDGE_SOURCES.filter((s) => s.adoption === "rejected").map((s) => s.id),
     /** Sources an agent may describe as usable today without new setup. */
     usableToday: KNOWLEDGE_SOURCES.filter((s) => s.adoption === "integrated" || s.id === "ollama").map((s) => s.id),
+    /** Wired but owner-gated: describing these as "on" would be a lie. */
+    gated: KNOWLEDGE_SOURCES.filter((s) => s.adoption === "integrated-tools").map((s) => s.id),
   };
 }

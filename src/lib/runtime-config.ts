@@ -80,6 +80,10 @@ export const CONFIG_FIELDS: readonly ConfigField[] = [
   { name: "LIBRECHAT_BASE_URL", label: "LibreChat base URL", kind: "url", group: "AI providers", providerSlug: "librechat", help: "Required: LibreChat has no default API port." },
   { name: "LIBRECHAT_API_KEY", label: "LibreChat key", kind: "secret", group: "AI providers", providerSlug: "librechat", help: "If your LibreChat exposes an API key." },
   { name: "LIBRECHAT_MODEL", label: "LibreChat model", kind: "string", group: "AI providers", providerSlug: "librechat", help: "Required: the model id to request." },
+  // ── Monid (tool marketplace; discover/inspect free, run billed per call) ──
+  { name: "ALO_MONID_ENABLED", label: "Monid integration", kind: "boolean", group: "AI providers", default: "false", help: "Off by default. discover/inspect are free; run spends your Monid balance and is always approval-gated." },
+  { name: "MONID_API_KEY", label: "Monid API key", kind: "secret", group: "AI providers", providerSlug: "monid", help: "From app.monid.ai/access/api-keys. Stored encrypted; never shown again after saving." },
+  { name: "MONID_BASE_URL", label: "Monid base URL", kind: "url", group: "AI providers", providerSlug: "monid", default: "https://api.monid.ai", help: "https only (plain http accepted for loopback only)." },
   { name: "ALO_PAID_AI_API_ALLOWED", label: "Owner switch 1: paid AI allowed", kind: "boolean", group: "AI providers", default: "false", restartRequired: false, help: "Both switches must be true before any external provider is contacted." },
   { name: "ALO_OWNER_APPROVED_PAID_AI_API", label: "Owner switch 2: approval recorded", kind: "boolean", group: "AI providers", default: "false", help: "Deliberately separate from switch 1." },
   { name: "OLLAMA_BASE_URL", label: "Ollama base URL", kind: "url", group: "AI providers", default: "http://127.0.0.1:11434", help: "Local model server. Public/remote hosts are rejected." },

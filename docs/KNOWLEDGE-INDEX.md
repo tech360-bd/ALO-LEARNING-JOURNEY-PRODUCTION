@@ -16,6 +16,7 @@ reviewed code change rather than a runtime upload.
 | State | Meaning |
 | --- | --- |
 | `integrated` | Already wired: speaks the OpenAI chat-completions protocol and is reachable through an owner gateway. |
+| `integrated-tools` | Wired as an owner-gated tool surface (Monid): free search, billed runs behind approval. |
 | `service` | Installed/run separately by the owner; this app only calls it (loopback/private hosts only). |
 | `pattern` | The *idea* is reused in this repo's own code; no server, no vendored source. |
 | `reference-only` | Documentation to read. No code and no data copied. |
@@ -29,7 +30,7 @@ reviewed code change rather than a runtime upload.
 | LibreChat | MIT | 47,577 | `integrated` | `LIBRECHAT_BASE_URL` + `LIBRECHAT_MODEL` owner gateway |
 | Ollama | MIT | — | `service` | local models on `127.0.0.1:11434` (first in the chain) |
 | vLLM | Apache-2.0 | 97,683 | `service` | only if the owner runs it elsewhere; needs a GPU |
-| Monid | MIT (connector layer; hosted calls **billed**) | 5,683 | `reference-only` | the connector *schema* as a design reference |
+| Monid | MIT (connector layer; hosted calls **billed**) | 5,683 | `integrated-tools` | free `discover`/`inspect`; `run` needs approval — see [`MONID-INTEGRATION.md`](./MONID-INTEGRATION.md) |
 | SignuDoc | MIT | 3,313 | `reference-only` | signing/audit model, if signatures are ever built |
 | free-for-dev | none stated | 143,796 | `reference-only` | a checklist; never copied wholesale |
 | Postman | proprietary (free client) | — | `reference-only` | build a local collection; no secrets uploaded |

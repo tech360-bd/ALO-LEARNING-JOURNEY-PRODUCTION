@@ -29,6 +29,8 @@ import { parseIntent, type IntentKind } from "@/lib/super-admin/intents";
 import { reviewLink } from "@/lib/link-review";
 import { getField, listRuntimeConfig } from "@/lib/runtime-config";
 import { findSource, knowledgeSummary } from "@/lib/knowledge/sources";
+import { catalogueReport } from "@/lib/monid-catalog";
+import { monidStatus } from "@/lib/monid";
 import { KNOWLEDGE_PROMPT_BUDGET, knowledgePromptBlock, sourceReport } from "@/lib/knowledge/agent";
 import { db } from "@/lib/db";
 import {
@@ -364,6 +366,24 @@ function planFor(intent: IntentKind, command: string, entities: Record<string, s
           },
         },
       ];
+    case "monid_status":
+      return [
+        {
+          label: "monid:status",
+          // Config only: no key use, no network. A status question must never
+          // spend the owner's balance.
+          run: async () => {
+            const status = monidStatus();
+            const ready = status.ready.discover ? "discover/inspect ready" : "discover/inspect not ready";
+            return `${status.enabled ? "on" : "off"} · key ${status.keyConfigured ? "set" : "missing"} · ${ready} · run ${status.ready.run ? "allowed with approval" : "blocked"} — ${status.reason}`;
+          },
+        },
+        {
+          label: "monid:catalogue",
+          run: async () => catalogueReport(),
+        },
+        { label: "next:steps", run: async () => "billed runs need owner approval in the Actions panel; discover/inspect are free" },
+      ];
     case "set_config":
       return [
         {
@@ -609,6 +629,13 @@ Rules:
 function composeSystemReply(intent: IntentKind, results: Array<{ step: string; ok: boolean; detail: string }>): string {
   // The knowledge answer is a table, not a status line: step details are capped
   // at 300 characters, so it is composed from the index itself.
+  if (intent === "monid_status" && results.every((r) => r.ok)) {
+    // The catalogue is the answer; the status line goes last so the owner sees
+    // what is reachable and then whether it is switched on.
+    const status = results.find((r) => r.step === "monid:status");
+    const catalogue = results.find((r) => r.step === "monid:catalogue");
+    return [catalogue?.detail ?? "", "", `Status: ${status?.detail ?? "unknown"}`].join("\n").trim();
+  }
   if (intent === "list_sources" && results.every((r) => r.ok)) {
     const id = results.find((r) => r.step === "index:inspect")?.detail.match(/source:([a-z0-9-]+)/)?.[1];
     return sourceReport(id);
@@ -624,6 +651,7 @@ function composeSystemReply(intent: IntentKind, results: Array<{ step: string; o
     intent === "review_link" ? "Link review complete." :
     intent === "set_config" ? "Configuration check complete." :
     intent === "list_sources" ? "Knowledge index (licences verified 2026-11-27)." :
+    intent === "monid_status" ? "Monid status (free search, billed runs need approval)." :
     "Command executed.";
   return `${head}\n${lines.join("\n")}`;
 }

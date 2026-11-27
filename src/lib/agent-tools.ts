@@ -304,6 +304,99 @@ registerTool({
   },
 });
 
+// ─── Monid tools (discover/inspect free, run billed + approval) ──────────────
+// The three verbs are separate tools on purpose: an agent may freely search the
+// catalogue and read a price, but a billed `run` is a *sensitive* tool, so the
+// loop suspends for owner approval before it is ever sent. `run` also requires
+// an approval id at the library level (src/lib/monid.ts), so even a direct call
+// that skipped the loop's approval would still be refused.
+registerTool({
+  name: 'monid_discover',
+  description: 'Search the Monid tool catalogue (2,000+ tools) for endpoints that fit a task. FREE — no balance is spent. Use before proposing a paid run.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What the task needs, e.g. "company funding data"' },
+      limit: { type: 'number', description: 'Max candidates (1-50, default 10)' },
+      minScore: { type: 'number', description: 'Minimum relevance score' },
+    },
+    required: ['query'],
+  },
+  requiresApproval: false,
+  handler: async (args): Promise<ToolResult> => {
+    const { monidDiscover, MonidError } = await import('./monid');
+    try {
+      const result = await monidDiscover({ query: args.query, limit: args.limit, minScore: args.minScore });
+      return { success: true, output: `Monid catalogue (free search):\n${result.text}`, metadata: { billed: false } };
+    } catch (err) {
+      const code = err instanceof MonidError ? err.code : 'error';
+      return { success: false, output: `Monid discover unavailable (${code}): ${err instanceof Error ? err.message : 'unknown error'}` };
+    }
+  },
+});
+
+registerTool({
+  name: 'monid_inspect',
+  description: 'Read one Monid endpoint: its input schema and its price. FREE. Always inspect before proposing a run, so the owner approves a real cost.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      provider: { type: 'string' },
+      endpoint: { type: 'string' },
+    },
+    required: ['provider', 'endpoint'],
+  },
+  requiresApproval: false,
+  handler: async (args): Promise<ToolResult> => {
+    const { monidInspect, MonidError } = await import('./monid');
+    try {
+      const result = await monidInspect(args.provider, args.endpoint);
+      return { success: true, output: `Monid endpoint ${args.provider}#${args.endpoint} (free inspect):\n${result.text}`, metadata: { billed: false } };
+    } catch (err) {
+      const code = err instanceof MonidError ? err.code : 'error';
+      return { success: false, output: `Monid inspect unavailable (${code}): ${err instanceof Error ? err.message : 'unknown error'}` };
+    }
+  },
+});
+
+registerTool({
+  name: 'monid_run',
+  description: 'Run ONE Monid endpoint. BILLED PER CALL — spends the owner\'s Monid balance, so it always needs owner approval with the quoted price.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      provider: { type: 'string' },
+      endpoint: { type: 'string' },
+      input: { type: 'object', description: 'From inspect: { body?, queryParams?, pathParams? }' },
+      quotedPrice: { type: 'string', description: 'The price inspect reported, so the approval records a real cost.' },
+      approvalId: { type: 'string', description: 'The approved action id. Without it the call is refused.' },
+    },
+    required: ['provider', 'endpoint'],
+  },
+  requiresApproval: true,
+  handler: async (args): Promise<ToolResult> => {
+    const { runMonidEndpoint, MonidError } = await import('./monid');
+    try {
+      const result = await runMonidEndpoint({
+        provider: args.provider,
+        endpoint: args.endpoint,
+        input: args.input,
+        quotedPrice: args.quotedPrice,
+        approvalId: args.approvalId,
+      });
+      return {
+        success: true,
+        output: `Monid run ${args.provider}#${args.endpoint} (billed):\n${result.text}`,
+        metadata: { billed: true, provider: args.provider, endpoint: args.endpoint, quotedPrice: args.quotedPrice ?? null },
+      };
+    } catch (err) {
+      const code = err instanceof MonidError ? err.code : 'error';
+      // approval_required is a normal, expected outcome — not a crash.
+      return { success: false, output: `Monid run refused (${code}): ${err instanceof Error ? err.message : 'unknown error'}` };
+    }
+  },
+});
+
 // Re-export the registry so callers can see what's available
 export const TOOL_NAMES = [
   'crm_create_lead',
@@ -315,6 +408,9 @@ export const TOOL_NAMES = [
   'social_publish_post',
   'content_save_artifact',
   'seo_keyword_research',
+  'monid_discover',
+  'monid_inspect',
+  'monid_run',
 ];
 
 // Tools that require human approval — surfaced to the agent loop + admin UI
@@ -322,6 +418,8 @@ export const SENSITIVE_TOOLS = [
   'sms_send_otp',
   'sms_send_message',
   'social_publish_post',
+  // Bills the owner's Monid balance on every call.
+  'monid_run',
 ];
 
 // Per-agent-type allowlists — restrict what each agent can do

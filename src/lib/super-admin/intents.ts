@@ -15,6 +15,7 @@ export type IntentKind =
   | "review_link"
   | "set_config"
   | "list_sources"
+  | "monid_status"
   | "chat";
 
 export interface ParsedIntent {
@@ -79,6 +80,25 @@ export function parseIntent(raw: string): ParsedIntent {
       entities: { url: repoUrl },
       confidence: 0.95,
       reason: "Found a repository URL — review it instead of answering from memory.",
+    };
+  }
+
+  // Monid is a gated *tool* marketplace, not a chat provider. A question about
+  // it is answered from the local catalogue/config (no network, no key use),
+  // never by falling through to the provider-switch rules.
+  if (/\bmonid\b/i.test(raw)) {
+    // Bengali has no ASCII word boundaries, so the terms are tested separately
+    // instead of hiding inside a \b…\b group where they would never match.
+    const wantsCatalogue =
+      /\b(tool|tools|catalog|catalogue|endpoint|provider|what can|capabilit|price|cost)\b/i.test(raw) ||
+      /(কী কী|কি কি|তালিকা|দাম|সুবিধা)/.test(raw);
+    return {
+      kind: "monid_status",
+      entities: wantsCatalogue ? { view: "catalogue" } : {},
+      confidence: 0.9,
+      reason: wantsCatalogue
+        ? "Asked what the Monid catalogue offers — answer from the local facts, no network call."
+        : "Asked about the Monid integration — report its switches honestly.",
     };
   }
 
