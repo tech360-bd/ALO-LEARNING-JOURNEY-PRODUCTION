@@ -28,6 +28,8 @@ import { getRunStore, type RunRow, type RunEventRow, type RunEventType, type Run
 import { parseIntent, type IntentKind } from "@/lib/super-admin/intents";
 import { reviewLink } from "@/lib/link-review";
 import { getField, listRuntimeConfig } from "@/lib/runtime-config";
+import { findSource, knowledgeSummary } from "@/lib/knowledge/sources";
+import { KNOWLEDGE_PROMPT_BUDGET, knowledgePromptBlock, sourceReport } from "@/lib/knowledge/agent";
 import { db } from "@/lib/db";
 import {
   detectLayerProvider,
@@ -187,7 +189,7 @@ class TokenStream {
 
 // ── Plan definitions (deterministic; the AI never picks steps) ─────────────
 
-function planFor(intent: IntentKind, command: string): RunStep[] {
+function planFor(intent: IntentKind, command: string, entities: Record<string, string> = {}): RunStep[] {
   switch (intent) {
     case "health_check":
       return [
@@ -337,6 +339,31 @@ function planFor(intent: IntentKind, command: string): RunStep[] {
         },
         { label: "next:steps", run: async () => "adoption needs a reviewed pull request; nothing is installed or deployed from chat" },
       ];
+    case "list_sources":
+      return [
+        {
+          label: "index:inspect",
+          run: async () => {
+            const named = entities.id;
+            if (named) {
+              const source = findSource(named);
+              if (!source) return `source not indexed: ${named}`;
+              return `source:${source.id} · ${source.adoption} · ${source.facts.spdx ?? "no licence stated"}`;
+            }
+            const summary = knowledgeSummary();
+            return `${summary.total} sources indexed · integrated: ${summary.integrated.join(", ") || "none"} · rejected: ${summary.rejected.join(", ") || "none"}`;
+          },
+        },
+        {
+          label: "index:policy",
+          // Each source's rule is generated from the index, so the answer cannot
+          // claim an integration that does not exist.
+          run: async () => {
+            const summary = knowledgeSummary();
+            return `${summary.byAdoption.rejected ?? 0} rejected · ${summary.byAdoption["reference-only"] ?? 0} reference-only · licences checked 2026-11-27`;
+          },
+        },
+      ];
     case "set_config":
       return [
         {
@@ -450,7 +477,7 @@ export async function executeRunPipeline(runId: string, deps: PipelineDeps = {})
       try {
         routed = await routeChatStream(
           {
-            system: SUPER_ADMIN_SYSTEM_PROMPT,
+            system: `${SUPER_ADMIN_SYSTEM_PROMPT}\n\n${knowledgePromptBlock(KNOWLEDGE_PROMPT_BUDGET)}`,
             user: userPrompt,
             task: "super-admin-chat",
             maxTokens: 1200,
@@ -497,7 +524,7 @@ export async function executeRunPipeline(runId: string, deps: PipelineDeps = {})
     }
 
     // ── System intents: execute the deterministic plan ─────────────────
-    const plan = planFor(intent.kind, run.command);
+    const plan = planFor(intent.kind, run.command, intent.entities);
     await emit("step", { step: "plan", index: 0, total: plan.length, status: "completed", detail: plan.map((p) => p.label).join(" → ") });
     await store.appendEvent(runId, "status", JSON.stringify({ message: `Executing ${intent.kind}`, plan: plan.map((p) => p.label) }), { intent: intent.kind, plan: JSON.stringify(plan.map((p) => p.label)) });
 
@@ -580,6 +607,12 @@ Rules:
 - Reply with ONLY JSON: {"reply": "..."} where reply is your answer (markdown allowed).`;
 
 function composeSystemReply(intent: IntentKind, results: Array<{ step: string; ok: boolean; detail: string }>): string {
+  // The knowledge answer is a table, not a status line: step details are capped
+  // at 300 characters, so it is composed from the index itself.
+  if (intent === "list_sources" && results.every((r) => r.ok)) {
+    const id = results.find((r) => r.step === "index:inspect")?.detail.match(/source:([a-z0-9-]+)/)?.[1];
+    return sourceReport(id);
+  }
   const lines = results.map((r) => `- **${r.step}**: ${r.ok ? "✓" : "✗"} ${r.detail}`);
   const head =
     intent === "health_check" ? "System health check complete." :
@@ -590,6 +623,7 @@ function composeSystemReply(intent: IntentKind, results: Array<{ step: string; o
     intent === "backup" ? "Backup request recorded." :
     intent === "review_link" ? "Link review complete." :
     intent === "set_config" ? "Configuration check complete." :
+    intent === "list_sources" ? "Knowledge index (licences verified 2026-11-27)." :
     "Command executed.";
   return `${head}\n${lines.join("\n")}`;
 }

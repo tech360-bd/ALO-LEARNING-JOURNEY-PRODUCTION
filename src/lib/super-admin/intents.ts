@@ -14,6 +14,7 @@ export type IntentKind =
   | "providers_status"
   | "review_link"
   | "set_config"
+  | "list_sources"
   | "chat";
 
 export interface ParsedIntent {
@@ -25,6 +26,8 @@ export interface ParsedIntent {
   /** Human-readable explanation of the routing decision. */
   reason: string;
 }
+
+import { KNOWLEDGE_SOURCES } from "@/lib/knowledge/sources";
 
 const PROVIDER_IDS = ["groq", "llm7", "opencode", "openrouter", "omniroute", "local-ollama", "ollama"];
 
@@ -41,6 +44,30 @@ export function parseIntent(raw: string): ParsedIntent {
   const text = raw.toLowerCase().trim();
 
   const providerMatch = PROVIDER_IDS.find((p) => text.includes(p));
+
+  // "add these repos as knowledge" / "কোন রেপো যোগ করা আছে" — an inventory
+  // question, answered from src/lib/knowledge/sources.ts. Matched before the URL
+  // rules so a message containing many links lists the index instead of
+  // reviewing only the first link.
+  const SOURCES_QUESTION =
+    /\b(knowledge|knowledgebase|knowledge\s+base|repo|repos|repository|repositories|sources?)\b[^\n]{0,40}\b(add|added|list|which|what|index|include|included|available|know)\b|\b(add|list|which|what)[^\n]{0,40}\b(repos?|repositories|sources)\b|(রেপো|রিপো|সোর্স|নলেজ)[^\n]{0,20}(যোগ|তালিকা|কোন|কী)/i;
+  if (SOURCES_QUESTION.test(raw)) {
+    // A named source narrows the answer to that one ("what about open-webui?").
+    const named = KNOWLEDGE_SOURCES.find(
+      (source) =>
+        text.includes(source.id) ||
+        text.includes(source.name.toLowerCase()) ||
+        source.id.split("-").every((part) => part.length > 2 && text.includes(part)),
+    );
+    return {
+      kind: "list_sources",
+      entities: named ? { id: named.id } : {},
+      confidence: 0.85,
+      reason: named
+        ? `Asked about the indexed source "${named.id}".`
+        : "Asked which repositories/sources are in the knowledge index.",
+    };
+  }
 
   // A shared link is the strongest signal: the owner pasted something and wants
   // it checked. Matched before keyword rules so "check this error" and

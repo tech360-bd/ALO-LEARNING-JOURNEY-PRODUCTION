@@ -34,6 +34,15 @@ hand-written JSON blob.
 | Self-healing | `/api/health`, `/api/health/diagnose`, `deploy/monitor.sh` |
 | Local TTS/ASR + video | Piper → eSpeak → formant, whisper, ffmpeg burn-in (`/api/ai/voice`, `/api/asr-transcribe`, `/api/video/from-photo`) |
 
+## The register that keeps this honest
+
+The same decision, per source, is now machine-readable in
+`src/lib/knowledge/sources.ts` and rendered in [`docs/KNOWLEDGE-INDEX.md`](./KNOWLEDGE-INDEX.md):
+licence as the GitHub API reports it, adoption state (`integrated` / `service` /
+`pattern` / `reference-only` / `rejected`) and the one rule that applies. The
+Super Admin chat answers from that register (`list_sources` intent), so it cannot
+describe a rejected source as usable.
+
 ## Deliberately not vendored
 
 These are **whole platforms** (own database, own auth, own UI, often their own
