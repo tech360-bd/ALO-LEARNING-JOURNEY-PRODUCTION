@@ -124,22 +124,28 @@ jobs:
           [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
           [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
           [ -n "$VPS_SSH_HOST_KEY" ] || missing="$missing VPS_SSH_HOST_KEY"
-          if [ -z "$missing" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deployment::credentials present — running the network preflight"
-            exit 0
-          fi
           # A pair that exists but is a dummy is the state this repository is
           # actually in (run 45967580663: client id 17 chars, secret 17 chars).
           # It is a configuration gap exactly like a missing secret — nothing in
           # the codebase can fix it — so it takes the same skipped path, with a
           # different reason. A real pair that Tailscale REJECTS still fails
           # later, in the join step, which is a genuine network/credential error.
+          #
+          # This check must run BEFORE the "nothing missing ⇒ ready" branch:
+          # the placeholder pair fills every variable, so `missing` is empty and
+          # run 45969514987 was classified ready=true while the guard rejected
+          # it three steps later. Both halves of readiness are the same question.
           reason="missing_secrets"
           if [ -n "$TS_CLIENT_ID" ] && [ "${#TS_CLIENT_ID}" -lt 20 ]; then
             reason="placeholder_oauth_pair"
           elif [ -n "$TS_CLIENT_SECRET" ] && [ "${#TS_CLIENT_SECRET}" -lt 40 ]; then
             reason="placeholder_oauth_pair"
+          fi
+          if [ -z "$missing" ] && [ "$reason" = "missing_secrets" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "reason=ready" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deployment::credentials present — running the network preflight"
+            exit 0
           fi
           echo "ready=false" >> "$GITHUB_OUTPUT"
           echo "reason=$reason" >> "$GITHUB_OUTPUT"
