@@ -26,6 +26,8 @@
 
 import { getRunStore, type RunRow, type RunEventRow, type RunEventType, type RunStore } from "@/lib/super-admin/run-store";
 import { parseIntent, type IntentKind } from "@/lib/super-admin/intents";
+import { reviewLink } from "@/lib/link-review";
+import { getField, listRuntimeConfig } from "@/lib/runtime-config";
 import { db } from "@/lib/db";
 import {
   detectLayerProvider,
@@ -315,6 +317,43 @@ function planFor(intent: IntentKind, command: string): RunStep[] {
           },
         },
       ];
+    case "review_link":
+      return [
+        {
+          label: "review:link",
+          run: async () => {
+            const url = command.match(/https?:\/\/[^\s<>"']+/i)?.[0] ?? "";
+            if (!url) return "no link found in the message";
+            // Read-only: the SSRF-guarded browser fetches the page, the public
+            // GitHub API supplies licence/activity facts. The linked code is
+            // never cloned and never executed.
+            const review = await reviewLink(url);
+            const licence = review.licence
+              ? `${review.licence.name}${review.licence.spdx ? ` (${review.licence.spdx})` : ""}, risk ${review.licence.adoptionRisk}`
+              : "licence unreadable";
+            const flags = review.riskFlags.length ? ` — flags: ${review.riskFlags.join(", ")}` : "";
+            return `${review.verdict.toUpperCase()} · ${licence}${flags} · ${review.summary}`;
+          },
+        },
+        { label: "next:steps", run: async () => "adoption needs a reviewed pull request; nothing is installed or deployed from chat" },
+      ];
+    case "set_config":
+      return [
+        {
+          label: "config:inspect",
+          run: async () => {
+            const name = (command.match(/\b([A-Z][A-Z0-9_]{3,63})\b/) ?? [])[1] ?? "";
+            const field = getField(name);
+            if (!field) {
+              const all = await listRuntimeConfig();
+              return `"${name || "that name"}" is not an allowlisted setting; ${all.filter((v) => v.source === "unset").length} setting(s) are still unset`;
+            }
+            const view = (await listRuntimeConfig()).find((v) => v.name === name);
+            return `${name}: ${view?.source ?? "unset"}${field.restartRequired ? " (needs a restart)" : ""} — enter the value in the Config panel, not in chat`;
+          },
+        },
+        { label: "next:steps", run: async () => "values are encrypted at rest (AES-256-GCM); secrets are never accepted as chat text" },
+      ];
     case "chat":
     default:
       return [
@@ -549,6 +588,8 @@ function composeSystemReply(intent: IntentKind, results: Array<{ step: string; o
     intent === "switch_provider" ? "Provider switch complete." :
     intent === "analytics" ? "Analytics summary." :
     intent === "backup" ? "Backup request recorded." :
+    intent === "review_link" ? "Link review complete." :
+    intent === "set_config" ? "Configuration check complete." :
     "Command executed.";
   return `${head}\n${lines.join("\n")}`;
 }

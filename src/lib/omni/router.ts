@@ -25,7 +25,7 @@
 
 import { generateLocalChatJson, getPrivateLocalBaseUrl } from "@/lib/local-models";
 import { chainChat } from "@/lib/ai-chain";
-import { getExternalAiStatus, orderedProviders } from "@/lib/external-ai";
+import { getExternalAiStatus, orderedProviders, primeExternalAiConfig } from "@/lib/external-ai";
 import { db } from "@/lib/db";
 
 export interface OmniChatRequest {
@@ -195,6 +195,7 @@ export async function setPreferredProvider(providerId: string | null): Promise<v
  * Sequential only; never parallel. Throws when no real model answers.
  */
 export async function routeChat(req: OmniChatRequest): Promise<OmniChatResult> {
+  await primeExternalAiConfig();
   const start = Date.now();
   const tried: string[] = [];
 

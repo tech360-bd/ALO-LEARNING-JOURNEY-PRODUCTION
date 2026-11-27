@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
 import { generateChatReply } from '@/lib/ai';
+import { primeExternalAiConfig } from '@/lib/external-ai';
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -10,6 +11,8 @@ const MAX_MESSAGE_CHARS = 4000;
 
 export async function POST(req: NextRequest) {
   try {
+    // Dashboard-saved provider keys live in a file, not process.env.
+    await primeExternalAiConfig();
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);

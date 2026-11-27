@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getLocalAiStatus } from "@/lib/local-models";
-import { getExternalAiStatus } from "@/lib/external-ai";
+import { getExternalAiStatus, primeExternalAiConfig } from "@/lib/external-ai";
 import { localMediaBinaries } from "@/lib/local-audio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  await primeExternalAiConfig();
   const [ai, binaries] = await Promise.all([
     getLocalAiStatus(),
     Promise.resolve(localMediaBinaries()),

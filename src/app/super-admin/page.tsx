@@ -27,6 +27,7 @@ import {
   Network,
   Clock,
   ExternalLink,
+  Settings,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -152,6 +153,179 @@ function healthDot(ok: boolean) {
       role="status"
       aria-label={ok ? 'ok' : 'problem'}
     />
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Configuration panel — "change env / add an API key without a server shell"
+// Secrets are masked by the server (`****abcd`); this component never receives a
+// plaintext secret back, so a value typed here cannot be read out again later.
+type ConfigView = {
+  name: string;
+  label: string;
+  kind: 'string' | 'secret' | 'url' | 'boolean' | 'number';
+  group: string;
+  help: string;
+  restartRequired: boolean;
+  source: 'environment' | 'dashboard' | 'default' | 'unset';
+  display: string;
+  updatedAt?: string;
+};
+
+function sourceBadge(source: ConfigView['source']) {
+  const map: Record<ConfigView['source'], string> = {
+    environment: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30',
+    dashboard: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30',
+    default: 'bg-muted text-muted-foreground border-border',
+    unset: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30',
+  };
+  return map[source];
+}
+
+function ConfigPanel({ onToast }: { onToast: (m: string) => void }) {
+  const [values, setValues] = useState<ConfigView[]>([]);
+  const [open, setOpen] = useState(false);
+  const [group, setGroup] = useState<string>('AI providers');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [restartCommand, setRestartCommand] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/super-admin/config', { cache: 'no-store' });
+      if (res.ok) {
+        const body = await res.json();
+        setValues(body.values ?? []);
+      }
+    } catch {
+      // Offline/db-free: the panel stays usable, it just shows nothing new.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) void load();
+  }, [open, load]);
+
+  const save = async () => {
+    const payload: Record<string, string | null> = {};
+    for (const [name, value] of Object.entries(drafts)) {
+      if (value !== '') payload[name] = value;
+    }
+    if (Object.keys(payload).length === 0) {
+      onToast('Nothing changed.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/super-admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values: payload }),
+      });
+      const body = await res.json().catch(() => ({}));
+      const failed = (body.results ?? []).filter((r: { ok: boolean }) => !r.ok);
+      if (failed.length) {
+        onToast(failed.map((r: { name: string; error: string }) => `${r.name}: ${r.error}`).join(' · '));
+      } else {
+        onToast(`${Object.keys(payload).length} setting(s) saved.`);
+        setDrafts({});
+        setRestartCommand(body.restartCommand ?? null);
+        await load();
+      }
+    } catch (e) {
+      onToast(`Save failed: ${(e as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const groups = [...new Set(values.map((v) => v.group))];
+  const visible = values.filter((v) => v.group === group);
+
+  return (
+    <section className="rounded-xl border border-border bg-card p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <Settings className="size-3.5" /> Configuration
+        </h3>
+        <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide' : 'Open'}
+        </Button>
+      </div>
+      {!open ? (
+        <p className="text-xs text-muted-foreground">
+          Env values and API keys, editable here — no server terminal. Secrets are encrypted at rest.
+        </p>
+      ) : (
+        <>
+          <div className="mb-2 flex flex-wrap gap-1">
+            {groups.map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => setGroup(g)}
+                className={`rounded border px-1.5 py-0.5 text-[11px] ${
+                  g === group ? 'border-primary text-primary' : 'border-border text-muted-foreground'
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+          <ul className="flex flex-col gap-2">
+            {visible.map((v) => (
+              <li key={v.name} className="rounded-lg border border-border p-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium">{v.label}</p>
+                    <p className="truncate font-mono text-[10px] text-muted-foreground">{v.name}</p>
+                  </div>
+                  <Badge variant="outline" className={`shrink-0 text-[10px] ${sourceBadge(v.source)}`}>
+                    {v.source}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">{v.help}</p>
+                {v.source !== 'unset' && (
+                  <p className="mt-1 truncate font-mono text-[11px]" title="effective value (secrets masked)">
+                    {v.display || '—'}
+                  </p>
+                )}
+                {v.source === 'environment' ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Set in the real environment; a dashboard value cannot override it.
+                  </p>
+                ) : (
+                  <input
+                    type={v.kind === 'secret' ? 'password' : 'text'}
+                    className="mt-1 w-full rounded border border-border bg-background px-2 py-1 font-mono text-[11px]"
+                    placeholder={v.kind === 'secret' ? 'new value (never shown again)' : v.display || 'not set'}
+                    value={drafts[v.name] ?? ''}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [v.name]: e.target.value }))}
+                    autoComplete="off"
+                  />
+                )}
+                {v.restartRequired && (
+                  <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+                    Takes effect after a restart.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex items-center gap-1.5">
+            <Button size="sm" className="h-7 text-[11px]" onClick={save} disabled={saving}>
+              {saving ? <RefreshCw className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />} Save
+            </Button>
+            <span className="text-[11px] text-muted-foreground">Encrypted at rest · masked on read</span>
+          </div>
+          {restartCommand && (
+            <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 font-mono text-[11px] text-amber-700 dark:text-amber-300">
+              Restart required, run on the server: {restartCommand}
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -962,6 +1136,9 @@ export default function SuperAdminPage() {
                   </ul>
                 )}
               </section>
+
+              {/* Configuration (env + API keys, no shell needed) */}
+              <ConfigPanel onToast={setToast} />
 
               {/* Pending actions */}
               <section className="rounded-xl border border-border bg-card p-3">
