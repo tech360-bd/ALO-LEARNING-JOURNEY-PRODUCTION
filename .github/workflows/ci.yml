@@ -127,6 +127,13 @@ jobs:
           fi
           echo "No drift: the migration chain reproduces prisma/schema.prisma exactly."
 
+      # The workflow files themselves are code: a wrong action tag, a renamed
+      # required job or a read-less mode switch must fail here, not on main.
+      # It runs in this job (not `security-scan`) because it needs the parser
+      # that ships with the installed dev dependencies.
+      - name: Validate workflow files
+        run: node scripts/validate-workflows.mjs
+
       - name: Lint
         run: npm run lint
 
@@ -161,6 +168,35 @@ jobs:
 
       - name: Verify standalone output
         run: test -f .next/standalone/server.js
+
+      # The only proof that the artefact actually boots: start the standalone
+      # server, sign in, and probe the routes. It previously reported 6/13
+      # because SMOKE_ADMIN_EMAIL/PASSWORD never reached the child process;
+      # that is fixed, and this step keeps it fixed. SMOKE_HEALTH_EXPECT=honest
+      # accepts a truthful 503 (database reachability from the child is not
+      # assumed) but rejects a 500 or a fake "healthy".
+      - name: Smoke the standalone server (boot, sign-in, routes)
+        env:
+          SMOKE_PORT: "3096"
+          SMOKE_NODE_ENV: development
+          SMOKE_ADMIN_EMAIL: ci-smoke@alolabs.invalid
+        run: |
+          # The throwaway password and the session secret are GENERATED per run:
+          # a literal credential in a workflow file is a real finding for
+          # scripts/scan-secrets.mjs even when it only protects a container.
+          SMOKE_ADMIN_PASSWORD="$(node -e 'console.log(require("node:crypto").randomBytes(18).toString("hex"))')"
+          NEXTAUTH_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          export SMOKE_ADMIN_PASSWORD NEXTAUTH_SECRET
+          # `tail -n 1` is the bare scrypt$… value; the lines above it are .env
+          # instructions (the $. escapes would corrupt a direct env var).
+          HASH=$(printf '%s' "$SMOKE_ADMIN_PASSWORD" | node scripts/hash-admin-password.mjs | tail -n 1)
+          # SMOKE_HEALTH_EXPECT=honest: the database URL above is exported for the
+          # migration steps, but whether the standalone child reaches it is not
+          # assumed; a truthful 503 "unhealthy" is correct, a 500 or a fake
+          # "healthy" is not. SMOKE_EXPECT_AUTH=1 requires the unauthenticated 401.
+          ADMIN_EMAIL="$SMOKE_ADMIN_EMAIL" ADMIN_PASSWORD_HASH="$HASH" ADMIN_OTP_REQUIRED=false \
+            SMOKE_EXPECT_AUTH=1 SMOKE_HEALTH_EXPECT=honest RELEASE_SHA="$GITHUB_SHA" \
+            node scripts/verification/smoke-standalone.mjs
 
   security-scan:
     name: Secret scan

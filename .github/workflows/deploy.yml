@@ -72,10 +72,13 @@ jobs:
   # ── Read-only network evidence: Tailscale auth, ACL reachability, configured SSH port ──
   network-preflight:
     name: network-preflight
-    # Manual runs (preflight-only / deploy) always test the network. On push it
-    # runs only once the readiness switch is on: with deployment disabled and the
-    # Tailscale/SSH secrets not yet configured, every merge to main would
-    # otherwise end in a red, fail-closed preflight that deploys nothing.
+    # This comment said the job ran "only once the readiness switch is on", but
+    # the condition also fired on EVERY push to main. With the Tailscale/SSH
+    # secrets not configured, each merge therefore ended in a red, fail-closed
+    # preflight that deployed nothing — the recurring `Deploy to VPS` failure on
+    # main (runs 45958367979, 45910557693, 45892763352, …). The condition now
+    # matches the documented behaviour: a manual run always exercises the
+    # network; an automatic push only does so when deployment is switched on.
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || vars.VPS_DEPLOY_ENABLED == 'true') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -283,6 +286,7 @@ jobs:
     name: deploy
     needs: [verify, network-preflight]
     # Readiness switch + explicit run mode. Unset VPS_DEPLOY_ENABLED ⇒ skipped.
+    # On push `inputs` is empty, so it must not be consulted on that path.
     if: ${{ github.ref == 'refs/heads/main' && vars.VPS_DEPLOY_ENABLED == 'true' && (github.event_name == 'push' || inputs.mode == 'deploy') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
