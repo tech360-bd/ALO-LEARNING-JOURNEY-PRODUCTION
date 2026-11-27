@@ -268,10 +268,13 @@ try {
     body: JSON.stringify({ audioBase64: Buffer.from("RIFF").toString("base64"), format: "wav" }),
   });
   const asrBody = parse(asr.text) ?? {};
+  // A valid upload with no engine and no database must be a *truthful* 503 that
+  // says which dependency is missing. 500 is a bug (the request was valid) and
+  // 200 would mean text was invented; both are rejected.
   record(
     "POST /api/asr-transcribe",
-    asr.status === 200 || asr.status === 503 || asr.status === 500,
-    `HTTP ${asr.status} error=${asrBody.error ?? asrBody.provider ?? "ok"}`,
+    asr.status === 200 || (asr.status === 503 && ["asr_failed", "asr_engine_unavailable", "database_unavailable"].includes(asrBody.error)),
+    `HTTP ${asr.status} error=${asrBody.error ?? asrBody.provider ?? "ok"}${asr.status === 500 ? " (500 is never correct here)" : ""}`,
   );
 
   // 10. static asset really served from the standalone directory

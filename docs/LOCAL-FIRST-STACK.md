@@ -184,12 +184,19 @@ For a `200` the three critical checks must pass:
    longer exists on disk, and `releaseSha` can be stale. After every build:
    `pm2 restart learn --update-env && pm2 save`.
 2. **`.next/standalone/.env` is not copied by the build.** The build deletes it.
-   Always re-create it from the real environment file, then restart:
+   Always re-create it from the real environment file, then restart.
+   `npm run build` now ends with `scripts/verify-standalone.mjs`, which refuses
+   the artifact (exit 1) if a runtime asset is missing — `server.js`, static
+   chunks, `public/`, `prisma/`, the long-video worker, both Python daemons,
+   runtime-read `.ts` sources, or `RELEASE_SHA` — and prints the reminder when
+   `.env` is absent. Restoring `.env` stays the operator's step: it is never in
+   Git, and a fresh checkout legitimately has none.
 
 ```bash
 cd /home/alamin/alolabs-projects/ALO-LEARNING-JOURNEY-PRODUCTION
-npm run build
+npm run build                       # fails on a missing runtime asset; names .env if absent
 cp -a <your real env file> .next/standalone/.env      # see below
+chmod 600 .next/standalone/.env     # keep it out of other users' reach
 pm2 restart learn --update-env && pm2 save
 curl -sI http://127.0.0.1:3061/api/health | grep -i x-alo-health-reason
 ```
