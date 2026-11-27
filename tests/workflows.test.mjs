@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { lintDirectory, lintWorkflow, parseUses, collectUses, KNOWN_JOBS } from "../scripts/validate-workflows.mjs";
 
 const ok = (name, workflow) => {
@@ -234,4 +237,73 @@ test("an unusable credential pair is a configuration gap, not a red merge", asyn
   // No step may fail the job merely because the credentials are absent.
   const failClosed = steps.find((step) => step.name === "Fail closed if networking secrets are missing");
   assert.match(String(failClosed.if), /steps\.readiness\.outputs\.ready == 'true'/);
+});
+
+test("the readiness classifier, executed as written, classifies all five states", async () => {
+  // Extracts the real shell body from deploy.yml and runs it. This is the check
+  // that would have caught run 45969514987: the pair was a placeholder, every
+  // variable was filled, `missing` was empty, and the classifier said ready=true
+  // while the guard rejected the same pair three steps later.
+  const yaml = await (await import("../scripts/validate-workflows.mjs")).loadYaml();
+  const wf = yaml.load(readFileSync(".github/workflows/deploy.yml", "utf8"));
+  const body = wf.jobs["network-preflight"].steps.find((step) => step.id === "readiness").run;
+  const bodyPath = path.join(mkdtempSync(path.join(tmpdir(), "alo-classify-")), "classify.sh");
+  writeFileSync(bodyPath, body);
+
+  const real = { TS_CLIENT_ID: `k${"A".repeat(18)}CNTRL`, TS_CLIENT_SECRET: "x".repeat(44) };
+  const placeholder = { TS_CLIENT_ID: "abcdefghijklmnopq", TS_CLIENT_SECRET: "abcdefghijklmnopq" };
+  const host = { SERVER_HOST: "100.64.0.5", VPS_USER: "alamin", VPS_SSH_KEY: "key", VPS_SSH_HOST_KEY: "hostkey" };
+
+  const runCase = (env) => {
+    const out = mkdtempSync(path.join(tmpdir(), "alo-out-"));
+    const result = spawnSync("bash", [bodyPath], {
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_EVENT_NAME: env.GITHUB_EVENT_NAME ?? "push",
+        DISPATCH_MODE: env.DISPATCH_MODE ?? "",
+        TS_CLIENT_ID: env.TS_CLIENT_ID ?? "",
+        TS_CLIENT_SECRET: env.TS_CLIENT_SECRET ?? "",
+        TS_AUTH_KEY: "",
+        SERVER_HOST: env.SERVER_HOST ?? "",
+        VPS_USER: env.VPS_USER ?? "",
+        VPS_SSH_KEY: env.VPS_SSH_KEY ?? "",
+        VPS_SSH_HOST_KEY: env.VPS_SSH_HOST_KEY ?? "",
+        GITHUB_OUTPUT: path.join(out, "out"),
+        GITHUB_ENV: path.join(out, "env"),
+        GITHUB_STEP_SUMMARY: path.join(out, "summary"),
+      },
+      encoding: "utf8",
+    });
+    const outputs = readFileSync(path.join(out, "out"), "utf8");
+    const ready = /^ready=(.*)$/m.exec(outputs)?.[1];
+    const reason = /^reason=(.*)$/m.exec(outputs)?.[1];
+    return { status: result.status, ready, reason };
+  };
+
+  // 1) today's repository: the pair exists but is a placeholder
+  const placeholders = runCase({ ...placeholder, ...host });
+  assert.equal(placeholders.status, 0, "a placeholder pair must not fail the job");
+  assert.equal(placeholders.ready, "false");
+  assert.equal(placeholders.reason, "placeholder_oauth_pair");
+
+  // 2) nothing configured at all
+  const missing = runCase({});
+  assert.equal(missing.status, 0);
+  assert.equal(missing.ready, "false");
+  assert.equal(missing.reason, "missing_secrets");
+
+  // 3) a usable pair: the network steps may run
+  const usable = runCase({ ...real, ...host });
+  assert.equal(usable.status, 0);
+  assert.equal(usable.ready, "true");
+
+  // 4) a human asking for a deployment with a placeholder pair must fail loudly
+  const manual = runCase({ ...placeholder, ...host, GITHUB_EVENT_NAME: "workflow_dispatch", DISPATCH_MODE: "deploy" });
+  assert.equal(manual.status, 1);
+  assert.equal(manual.ready, "false");
+
+  // 5) …and succeed when the pair is real
+  const manualReal = runCase({ ...real, ...host, GITHUB_EVENT_NAME: "workflow_dispatch", DISPATCH_MODE: "deploy" });
+  assert.equal(manualReal.status, 0);
+  assert.equal(manualReal.ready, "true");
 });

@@ -233,7 +233,20 @@ The job publishes `outputs.ready`, and the `deploy` job's condition now includes
 `needs.network-preflight.outputs.ready == 'true'`. That is what keeps the neutral
 verdict honest: a green-but-skipped preflight can never authorise a deployment.
 
-Replayed locally for all four paths:
+**Two ordering bugs were found only by running it on a real runner**, and both are
+now executed as a test rather than reviewed by eye:
+
+1. run 45964504678 — the classifier sat *after* the guard that reads its output,
+   so the guard ran first and the job was still red;
+2. run 45969514987 — the classifier checked `missing` **before** the placeholder
+   shape, so a 17/17 pair filled every variable, `missing` was empty and it
+   reported `ready=true` while the guard rejected the same pair three steps later.
+   Both halves of readiness are now the same question, asked in one place.
+
+`tests/workflows.test.mjs` extracts the classifier's shell body **from
+deploy.yml** and runs it for five states (placeholder pair → skipped, nothing
+configured → skipped, real pair → ready, manual `mode=deploy` with a placeholder
+→ fails, manual with a real pair → ready). Replayed locally for all paths:
 
 ```
 [placeholders (today)] ready=false reason=placeholder_oauth_pair skipped=4 job=GREEN deploy=false
