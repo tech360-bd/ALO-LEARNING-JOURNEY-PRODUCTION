@@ -258,6 +258,32 @@ configured → skipped, real pair → ready, manual `mode=deploy` with a placeho
 A REAL pair that Tailscale rejects still fails later, in the tailnet join — that
 is a genuine credential/network error, not a configuration gap, and it stays red.
 
+## Verified on `main` (run 45970909472)
+
+The merge of #48 produced the first green `Deploy to VPS` on `main`, and it is
+green for the honest reason — nothing was verifiable, so nothing was claimed:
+
+```
+JOB network-preflight: success
+  3 Classify deployment readiness: success          (ready=false, placeholder_oauth_pair)
+  4 Report skipped preflight (credentials not usable): success
+  5 Verdict — nothing to verify (credentials not usable): success
+  6 Fail closed if networking secrets are missing: skipped
+  7 Tailscale connect: skipped      8 Assert the runner joined the tailnet: skipped
+  9 Tailscale diagnostics: skipped 10 Tailscale status: skipped
+ 11 Configure SSH: skipped         12 Preflight (tailnet/SSH): skipped
+ 13 Network evidence: skipped      14 Preflight summary: success
+JOB deploy: skipped
+```
+
+Annotation shown on the run: `network preflight SKIPPED — the tailnet credentials
+are not usable. Nothing was deployed; CI is unaffected.`
+
+That same run also exposed one cosmetic defect — the notice printed
+`{reason}:` because `{reason}` outside `${…}` is literal text. Fixed, and
+`tests/workflows.test.mjs` now fails if `{reason}` ever reappears in an
+annotation.
+
 ## What still needs a human
 
 1. **`vars.VPS_DEPLOY_ENABLED` is `'true'` and the deploy secrets are

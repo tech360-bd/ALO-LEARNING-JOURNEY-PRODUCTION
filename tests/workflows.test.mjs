@@ -307,3 +307,12 @@ test("the readiness classifier, executed as written, classifies all five states"
   assert.equal(manualReal.status, 0);
   assert.equal(manualReal.ready, "true");
 });
+
+test("the skip annotation carries the reason, not a literal placeholder", () => {
+  // Run 45970909472 printed "notice: {reason}: — ..." because `{reason}` outside
+  // `${...}` is literal text. The annotation is the only thing a human sees, so
+  // it must contain the shell variable, never the braces.
+  const source = readFileSync(".github/workflows/deploy.yml", "utf8");
+  assert.doesNotMatch(source, /::notice[^\n]*\{reason\}/, "unexpanded {reason} in an annotation");
+  assert.match(source, /\$reason/, "the reason must be interpolated by the shell");
+});
