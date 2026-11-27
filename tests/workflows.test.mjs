@@ -157,3 +157,28 @@ test("the standalone smoke is generated credentials, never a literal", () => {
   assert.match(yamlSource, /SMOKE_HEALTH_EXPECT=honest/);
   assert.match(yamlSource, /RELEASE_SHA="\$GITHUB_SHA"/);
 });
+
+test("the preflight skips (not fails) when the switch is on but credentials are absent", async () => {
+  // Regression: VPS_DEPLOY_ENABLED was already 'true' while the Tailscale/SSH
+  // secrets were unset, so every merge to main reported a deployment failure
+  // that deployed nothing (runs 45958367979 … 45963030024).
+  const yaml = await (await import("../scripts/validate-workflows.mjs")).loadYaml();
+  const wf = yaml.load(readFileSync(".github/workflows/deploy.yml", "utf8"));
+  const steps = wf.jobs["network-preflight"].steps;
+  const classify = steps.find((step) => step.id === "readiness");
+  assert.ok(classify, "a readiness classification step must exist");
+  assert.match(String(classify.run), /ready=false/, "it must be able to report not-ready");
+  assert.match(String(classify.run), /GITHUB_STEP_SUMMARY/, "it must say what is missing in the job summary");
+
+  // Every step that touches Tailscale or SSH must depend on that output…
+  for (const name of [
+    "Tailscale connect (ephemeral tagged runner)",
+    "Configure SSH (pinned host key, key material only)",
+  ]) {
+    const step = steps.find((entry) => entry.name === name);
+    assert.ok(step, `${name} missing`);
+    assert.match(String(step.if), /steps\.readiness\.outputs\.ready == 'true'/, `${name} must be gated on readiness`);
+  }
+  // …and a human who asked for a deployment still gets a hard failure.
+  assert.match(String(classify.run), /DISPATCH_MODE" = "deploy"/, "mode=deploy must fail loudly, never skip silently");
+});

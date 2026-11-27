@@ -127,6 +127,75 @@ jobs:
             exit 1
           fi
 
+      # ── Deployment readiness, decided by evidence instead of intent ────────
+      # The failure this replaces: VPS_DEPLOY_ENABLED is 'true', the Tailscale
+      # and SSH secrets are NOT configured, so every merge to main ended red in
+      # "Fail closed if networking secrets are missing" while `deploy` was
+      # skipped — 20 of 20 visible Deploy runs, all on 2026-11-26/27 (run
+      # 45963030024 is the last). The switch says "a deployment is wanted"; it
+      # never said "this repository can authenticate". This step asks the only
+      # question that matters and records the answer, in one read-only run.
+      #
+      #   ready     = the OAuth pair, the host, and the pinned SSH material are
+      #               all present ⇒ the network steps below run;
+      #   not-ready = they are absent ⇒ the run is marked SKIPPED, not failed,
+      #               and the job summary says exactly what to add. A merge to
+      #               main then stops reporting a deployment failure that never
+      #               deployed anything.
+      #
+      # A credential that is PRESENT but malformed still fails hard — that is a
+      # misconfiguration, not an unconfigured repository.
+      - name: Classify deployment readiness
+        id: readiness
+        env:
+          TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
+          DISPATCH_MODE: ${{ inputs.mode }}
+        run: |
+          missing=""
+          [ -n "$TS_CLIENT_ID" ]     || missing="$missing TAILSCALE_OAUTH_CLIENT_ID"
+          [ -n "$TS_CLIENT_SECRET" ] || missing="$missing TAILSCALE_OAUTH_SECRET"
+          [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or VPS_HOST)"
+          [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
+          [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
+          [ -n "$VPS_SSH_HOST_KEY" ] || missing="$missing VPS_SSH_HOST_KEY"
+          if [ -z "$missing" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deployment::credentials present — running the network preflight"
+            exit 0
+          fi
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Deployment NOT attempted — credentials not configured"
+            echo ""
+            echo "vars.VPS_DEPLOY_ENABLED is \`'${{ vars.VPS_DEPLOY_ENABLED }}'\` (a deployment is wanted), but these repository secrets are absent:"
+            echo ""
+            for name in $missing; do echo "- \`$name\`"; done
+            echo ""
+            echo "Add them in Settings → Secrets and variables → Actions, then re-run this workflow (or dispatch it with mode=deploy)."
+            echo "Tailscale must be an **OAuth client** (\`k…CNTRL\` + secret), never a \`tskey-\` auth key; the SSH host key must be the server's public key line."
+            echo ""
+            echo "Until then this run is reported as skipped, not failed: nothing was deployed and nothing is broken."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_MODE" = "deploy" ]; then
+            # A human explicitly asked for a deployment. Silently skipping would
+            # be a fake green, so that case still fails — with the same list.
+            echo "::error title=Deployment::mode=deploy was requested, but required secrets are missing:$missing"
+            exit 1
+          fi
+          echo "::notice title=Deployment::required secrets are missing:$missing — skipping the network preflight instead of failing the merge"
+          exit 0
+
+      - name: Report skipped preflight (credentials not configured)
+        if: ${{ steps.readiness.outputs.ready != 'true' }}
+        run: |
+          echo "Network preflight skipped: see the job summary for the missing secrets."
+
       # Pinned action: tailscale/github-action v4.4.0, pinned to its release
       # commit SHA (064b10558093f38325e838ddea35486bdc6b1d5c). Nodes created by
       # this action are ephemeral: they log out at the end of the job and are
@@ -135,6 +204,7 @@ jobs:
       # The action performs the join itself; the next step only asserts the
       # result, because the action can swallow a failed `tailscale up`.
       - name: Tailscale connect (ephemeral tagged runner)
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
         continue-on-error: true
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
@@ -162,6 +232,7 @@ jobs:
       # itself is left to the pinned action: it performs the OAuth exchange that
       # Tailscale's deprecation of plain auth keys now requires.
       - name: Assert the runner joined the tailnet
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
         run: |
           set -uo pipefail
           if sudo -n tailscale status >/dev/null 2>&1; then
@@ -180,7 +251,7 @@ jobs:
       # real reason (unknown/mistagged OAuth key, ACL denial, expired client).
       # This read-only step surfaces it without exposing any secret value.
       - name: Tailscale diagnostics (read-only, safe to fail)
-        if: always()
+        if: ${{ always() && steps.readiness.outputs.ready == 'true' }}
         env:
           TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
           TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
@@ -210,9 +281,11 @@ jobs:
           note "tailscale-status: $(printf '%s' "$st" | head -6)"
 
       - name: Tailscale status (evidence)
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
         run: tailscale status || true
 
       - name: Configure SSH (pinned host key, key material only)
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
         env:
           SERVER_PORT: ${{ secrets.VPS_PORT }}
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
@@ -235,6 +308,7 @@ jobs:
           fi
 
       - name: 'Preflight: tailnet destination + configured SSH port + SSH auth (read-only)'
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
         timeout-minutes: 4
         env:
           SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
