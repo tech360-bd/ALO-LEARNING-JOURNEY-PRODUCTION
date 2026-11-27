@@ -120,8 +120,8 @@ Repository → **Settings → Secrets and variables → Actions**.
 | Name | Requirement |
 |---|---|
 | `VPS_APP_DIR` | Required exact absolute path; confirm live PM2 cwd/proxy/storage. No fallback is allowed. |
-| `VPS_PM2_APP` | PM2 app name; default is `learn-aloeducation`. |
-| `VPS_APP_PORT` | Actual local app port; default is `3017`. |
+| `VPS_PM2_APP` | Must be exactly `learn` (matches `ecosystem.learn.config.cjs`); the workflow fails closed on any other value. |
+| `VPS_APP_PORT` | Must be exactly `3061` (matches `Caddyfile`, `deploy/nginx/learn-aloeducation.conf` and `deploy/health-check.sh`); the workflow fails closed on any other value. |
 | `VPS_DOMAIN` | Required public `https://` URL; public health is a hard gate. |
 | `VPS_RESTORE_TEST_SHA` | Exact candidate SHA successfully rehearsed on an isolated backup restore. |
 | `VPS_RESTORE_TEST_REFERENCE` | Non-secret identifier for the restore-rehearsal evidence. |

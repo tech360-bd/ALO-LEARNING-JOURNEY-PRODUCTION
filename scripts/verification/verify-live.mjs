@@ -5,6 +5,12 @@
  *   npm run verify:live                       # http://127.0.0.1:3061
  *   npm run verify:live -- --url=https://learn.alolabs.net
  *   ADMIN_EMAIL=… ADMIN_PASSWORD=… npm run verify:live
+ *   ADMIN_EMAIL=… ADMIN_PASSWORD=… npm run verify:live -- --jar=/tmp/alo.jar
+ *
+ * `--jar=PATH` saves the signed-in session as a curl cookie jar (mode 0600), so
+ * the authenticated endpoints in the runbook can be read with `curl -b PATH`
+ * instead of pasting a token around. The jar grants full admin access: it is
+ * written only when asked for, never printed, and should be deleted afterwards.
  *
  * Why this exists: every step of the health cutover could be checked except the
  * two that need the real box — a 200 from `/api/health` (needs MySQL) and an
@@ -23,6 +29,8 @@
  */
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { chmod, writeFile } from "node:fs/promises";
+import { cookiePairs, isSecureSessionCookie, toNetscapeJar } from "./cookie-jar.mjs";
 
 const args = new Map(
   process.argv
@@ -62,19 +70,6 @@ async function call(path, init = {}) {
   }
   const setCookie = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
   return { status: res.status, body, text: text.slice(0, 400), setCookie };
-}
-
-/** "name=value" pairs, dropping attributes and expired (clearing) cookies. */
-function cookiePairs(setCookie) {
-  const pairs = [];
-  for (const raw of setCookie) {
-    const [pair] = raw.split(";");
-    const [name, ...value] = pair.split("=");
-    if (!name || value.join("=") === "") continue; // empty value = clear
-    if (/expires=Thu, 01 Jan 1970/i.test(raw)) continue;
-    pairs.push(`${name.trim()}=${value.join("=").trim()}`);
-  }
-  return pairs;
 }
 
 async function ask(question, envValue) {
@@ -143,6 +138,18 @@ async function checkAuth() {
   });
   jar.push(...cookiePairs(login.setCookie));
 
+  // `__Secure-` cookies are only ever sent over TLS, so a session minted by a
+  // plain-http probe cannot be replayed with a cookie jar. Say so instead of
+  // writing a jar that looks fine and authenticates nothing.
+  const secureSessionOnly = jar.some((pair) => isSecureSessionCookie(pair.split("=")[0]));
+  if (secureSessionOnly && new URL(BASE).protocol !== "https:") {
+    note(
+      "\n!  This session is HTTPS-only (the app mints __Secure- cookies in production),\n" +
+        "   so `curl -b <jar>` over this plain-http origin would be unsigned and rejected.\n" +
+        "   Re-run against the https origin (e.g. --url=https://learn.alolabs.net) to save a usable jar."
+    );
+  }
+
   const session = await call("/api/auth/session", { headers: { Cookie: jar.join("; ") } });
   const user = session.body?.user ?? null;
   const role = session.body?.role ?? user?.role ?? null;
@@ -154,6 +161,25 @@ async function checkAuth() {
     "Sign-in failed. Check that ADMIN_EMAIL matches ADMIN_PASSWORD_HASH, that the hash kept its escaped \\$ separators in .env, and that ADMIN_OTP_REQUIRED=false hides the OTP step. Then: curl -sS ${BASE}/api/health/diagnose".replace("${BASE}", BASE)
   );
   if (ok) {
+    const jarPath = args.get("jar");
+    if (jarPath && jarPath !== "true" && secureSessionOnly && new URL(BASE).protocol !== "https:") {
+      record(
+        "session saved as a curl cookie jar",
+        false,
+        "not written: an HTTPS-only session cookie cannot be replayed over plain http",
+        `Re-run with --url=https://<public-host> --jar=${jarPath} so the jar matches the scheme the browser uses.`
+      );
+    } else if (jarPath && jarPath !== "true") {
+      try {
+        await writeFile(jarPath, toNetscapeJar(BASE, jar), { mode: 0o600 });
+        await chmod(jarPath, 0o600);
+        record("session saved as a curl cookie jar", true, jarPath);
+        note(`\n   curl -sS -b ${jarPath} ${BASE}/api/health/diagnose | jq .`);
+        note(`   rm -f ${jarPath}   # delete when finished: it is a live admin session\n`);
+      } catch (error) {
+        record("session saved as a curl cookie jar", false, String(error?.message ?? error), "Pick a writable path, e.g. --jar=/tmp/alo.jar");
+      }
+    }
     // A session that cannot reach an owner-only route is not a usable session.
     const diagnose = await call("/api/health/diagnose", { headers: { Cookie: jar.join("; ") } });
     record(
