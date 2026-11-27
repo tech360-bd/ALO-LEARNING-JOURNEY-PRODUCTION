@@ -86,47 +86,6 @@ jobs:
       - name: Checkout exact SHA
         uses: actions/checkout@v7
 
-      - name: Fail closed if networking secrets are missing
-        env:
-          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
-          TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
-          SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
-        run: |
-          missing=""
-          # The OAuth client pair is required. Plain auth keys are deprecated by
-          # Tailscale and a non-reusable key is consumed by the first join, so a
-          # key that "worked once" fails every later run with "invalid key"
-          # (deploy runs 45888174326 and 45889640056). Nothing here prints a
-          # secret; only shapes and lengths, which cannot be replayed.
-          if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
-            missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
-          else
-            case "$TS_CLIENT_ID" in
-              k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
-              tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
-              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
-            esac
-            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
-              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
-              exit 1
-            fi
-          fi
-          if [ -n "$TS_AUTH_KEY" ]; then
-            echo "::warning title=Tailnet::TAILSCALE_AUTH_KEY is set but no longer used — the workflow is OAuth-client only. Delete the secret so it cannot be mistaken for a working credential."
-          fi
-          [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
-          [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
-          [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
-          [ -n "$VPS_SSH_HOST_KEY" ] || missing="$missing VPS_SSH_HOST_KEY"
-          if [ -n "$missing" ]; then
-            echo "::error::Missing required GitHub secret(s):$missing — see DEPLOYMENT.md §GitHub setup and deploy/tailscale/README.md. Refusing to continue."
-            exit 1
-          fi
-
       # ── Deployment readiness, decided by evidence instead of intent ────────
       # The failure this replaces: VPS_DEPLOY_ENABLED is 'true', the Tailscale
       # and SSH secrets are NOT configured, so every merge to main ended red in
@@ -195,6 +154,52 @@ jobs:
         if: ${{ steps.readiness.outputs.ready != 'true' }}
         run: |
           echo "Network preflight skipped: see the job summary for the missing secrets."
+
+      # Missing credentials are classified below and end the run as SKIPPED.
+      # This step is the other half: credentials that are present but malformed
+      # (a tskey- auth key instead of an OAuth client, a truncated pair) must
+      # still fail hard, so it only runs once readiness is confirmed.
+      - name: Fail closed if networking secrets are missing
+        if: ${{ steps.readiness.outputs.ready == 'true' }}
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TS_CLIENT_ID: ${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.TAILSCALE_OAUTH_SECRET }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST || secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_HOST_KEY: ${{ secrets.VPS_SSH_HOST_KEY }}
+        run: |
+          missing=""
+          # The OAuth client pair is required. Plain auth keys are deprecated by
+          # Tailscale and a non-reusable key is consumed by the first join, so a
+          # key that "worked once" fails every later run with "invalid key"
+          # (deploy runs 45888174326 and 45889640056). Nothing here prints a
+          # secret; only shapes and lengths, which cannot be replayed.
+          if [ -z "$TS_CLIENT_ID" ] || [ -z "$TS_CLIENT_SECRET" ]; then
+            missing="$missing TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_OAUTH_SECRET"
+          else
+            case "$TS_CLIENT_ID" in
+              k*CNTRL) echo "::notice title=Tailnet::OAuth client id looks like a Tailscale client id" ;;
+              tskey-*) echo "::error title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID holds an auth key (tskey-…), not an OAuth client id. Create one at https://login.tailscale.com/admin/settings/oauth — do not reuse the auth key."; exit 1 ;;
+              *) echo "::warning title=Tailnet::TAILSCALE_OAUTH_CLIENT_ID does not look like a client id (expected k…CNTRL, got length ${#TS_CLIENT_ID}). Placeholder or truncated values fail the join with \"invalid key\"." ;;
+            esac
+            if [ "${#TS_CLIENT_ID}" -lt 10 ] || [ "${#TS_CLIENT_SECRET}" -lt 20 ]; then
+              echo "::error title=Tailnet::the OAuth pair looks too short (client id ${#TS_CLIENT_ID}, secret ${#TS_CLIENT_SECRET}). A real client id is 9+ chars (k…CNTRL) and the secret is far longer; these look like placeholders, and the join will fail with \"invalid key\"."
+              exit 1
+            fi
+          fi
+          if [ -n "$TS_AUTH_KEY" ]; then
+            echo "::warning title=Tailnet::TAILSCALE_AUTH_KEY is set but no longer used — the workflow is OAuth-client only. Delete the secret so it cannot be mistaken for a working credential."
+          fi
+          [ -n "$SERVER_HOST" ]      || missing="$missing SERVER_HOST (or legacy VPS_HOST)"
+          [ -n "$VPS_USER" ]         || missing="$missing VPS_USER"
+          [ -n "$VPS_SSH_KEY" ]      || missing="$missing VPS_SSH_KEY"
+          [ -n "$VPS_SSH_HOST_KEY" ] || missing="$missing VPS_SSH_HOST_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required GitHub secret(s):$missing — see DEPLOYMENT.md §GitHub setup and deploy/tailscale/README.md. Refusing to continue."
+            exit 1
+          fi
 
       # Pinned action: tailscale/github-action v4.4.0, pinned to its release
       # commit SHA (064b10558093f38325e838ddea35486bdc6b1d5c). Nodes created by

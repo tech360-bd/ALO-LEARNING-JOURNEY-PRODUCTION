@@ -182,3 +182,34 @@ test("the preflight skips (not fails) when the switch is on but credentials are 
   // …and a human who asked for a deployment still gets a hard failure.
   assert.match(String(classify.run), /DISPATCH_MODE" = "deploy"/, "mode=deploy must fail loudly, never skip silently");
 });
+
+test("the readiness classifier runs before every step that reads its output", async () => {
+  // The first version of the fix placed the classifier AFTER the fail-closed
+  // guard, so the guard still ran (and still failed) before readiness was known:
+  // run 45964504678 reproduced the red job exactly. Order is the contract.
+  const yaml = await (await import("../scripts/validate-workflows.mjs")).loadYaml();
+  const wf = yaml.load(readFileSync(".github/workflows/deploy.yml", "utf8"));
+  const steps = wf.jobs["network-preflight"].steps;
+  const classifierIndex = steps.findIndex((step) => step.id === "readiness");
+  assert.ok(classifierIndex >= 0, "no readiness step");
+  const readers = steps
+    .map((step, index) => ({ index, text: JSON.stringify(step.if ?? "") }))
+    .filter((entry) => entry.text.includes("steps.readiness.outputs"));
+  assert.ok(readers.length >= 4, "expected several steps gated on readiness");
+  for (const reader of readers) {
+    assert.ok(
+      reader.index > classifierIndex,
+      `step ${reader.index + 1} ("${steps[reader.index].name}") reads readiness before it is produced (classifier is step ${classifierIndex + 1})`,
+    );
+  }
+});
+
+test("the fail-closed malformed-credential guard cannot fire before readiness", async () => {
+  const yaml = await (await import("../scripts/validate-workflows.mjs")).loadYaml();
+  const wf = yaml.load(readFileSync(".github/workflows/deploy.yml", "utf8"));
+  const steps = wf.jobs["network-preflight"].steps;
+  const guard = steps.find((step) => step.name === "Fail closed if networking secrets are missing");
+  assert.ok(guard, "the malformed-credential guard is missing");
+  assert.match(String(guard.if), /steps\.readiness\.outputs\.ready == 'true'/, "the guard must only reject malformed credentials");
+  assert.match(String(guard.run), /tskey-/, "the guard must keep the auth-key-vs-OAuth-client check");
+});

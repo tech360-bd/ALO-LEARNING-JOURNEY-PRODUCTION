@@ -75,7 +75,9 @@ networking secrets are missing* on every merge:
 The switch means *"a deployment is wanted"*. It never meant *"this repository can
 authenticate"*. Two changes make the two questions separate:
 
-1. A read-only **`Classify deployment readiness`** step (`id: readiness`) asks
+1. A read-only **`Classify deployment readiness`** step (`id: readiness` — the
+   **first step after checkout**, because a step cannot read an output that a
+   later step produces; run 45964504678 was red for exactly that reason) asks
    whether the OAuth pair, the host and the pinned SSH material are all present,
    and writes `ready=true|false` to `$GITHUB_OUTPUT`. When they are absent it
    writes the exact missing list to the **job summary** and the run continues.
@@ -91,9 +93,18 @@ too-short pair, a malformed host key), and **`workflow_dispatch` with
 deployment must never get a silent skip. `deploy` still requires the switch, the
 `production` approval and a green `verify`.
 
-Pinned by two tests: *a merge with deployment switched off cannot produce a red
-preflight* and *the preflight skips (not fails) when the switch is on but
-credentials are absent*.
+The step graph was also replayed locally for the four cases that matter:
+
+| Case | Expected | Result |
+| --- | --- | --- |
+| switch on, secrets absent (today) | preflight skipped, job green | `RESULT: network-preflight green` |
+| `workflow_dispatch mode=deploy`, secrets absent | hard failure | fails in *Classify deployment readiness* |
+| secrets present but `tskey-` / too short | hard failure | fails in *Fail closed if networking secrets are missing* |
+| full OAuth pair + host + SSH material | network steps run | reaches *Tailscale connect* |
+
+Pinned by four tests, including the ordering one: *the readiness classifier runs
+before every step that reads its output* and *the fail-closed
+malformed-credential guard cannot fire before readiness*.
 
 ### 2. The standalone smoke test was silently mis-wired
 
