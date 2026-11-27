@@ -218,6 +218,33 @@ Two improvements came out of that run:
   never joined, which reads like a network outage. It now says plainly that the
   pair is a placeholder and there is no evidence to collect.
 
+## The rule that makes `main` green without lying
+
+`network-preflight` now has three possible verdicts, and each one is decided by
+evidence:
+
+| State of the credentials | Automatic push to `main` | `workflow_dispatch mode=deploy` |
+| --- | --- | --- |
+| absent | **neutral / skipped** — reason `missing_secrets`, job summary lists them | **fails** (a human asked to deploy) |
+| present but placeholder (17-char pair, `tskey-`, too short) | **neutral / skipped** — reason `placeholder_oauth_pair` | **fails**, naming the shape |
+| real OAuth client + host + pinned SSH key | runs Tailscale, SSH and the health preflight; can fail for a real network reason | same, then `deploy` runs |
+
+The job publishes `outputs.ready`, and the `deploy` job's condition now includes
+`needs.network-preflight.outputs.ready == 'true'`. That is what keeps the neutral
+verdict honest: a green-but-skipped preflight can never authorise a deployment.
+
+Replayed locally for all four paths:
+
+```
+[placeholders (today)] ready=false reason=placeholder_oauth_pair skipped=4 job=GREEN deploy=false
+[nothing configured]   ready=false reason=missing_secrets        skipped=4 job=GREEN deploy=false
+[real credentials]     ready=true                            skipped=0 job=GREEN deploy=true
+[manual mode=deploy]   fails in Classify deployment readiness      job=RED  deploy=false
+```
+
+A REAL pair that Tailscale rejects still fails later, in the tailnet join — that
+is a genuine credential/network error, not a configuration gap, and it stays red.
+
 ## What still needs a human
 
 1. **`vars.VPS_DEPLOY_ENABLED` is `'true'` and the deploy secrets are

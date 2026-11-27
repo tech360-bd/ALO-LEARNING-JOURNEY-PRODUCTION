@@ -181,6 +181,10 @@ test("the preflight skips (not fails) when the switch is on but credentials are 
   }
   // …and a human who asked for a deployment still gets a hard failure.
   assert.match(String(classify.run), /DISPATCH_MODE" = "deploy"/, "mode=deploy must fail loudly, never skip silently");
+  // The job must publish its verdict for the deploy job to consume…
+  assert.equal(String(wf.jobs["network-preflight"].outputs?.ready ?? "").includes("steps.readiness.outputs.ready"), true);
+  // …and a green-but-skipped preflight must never authorise a deployment.
+  assert.match(String(wf.jobs.deploy.if), /needs\.network-preflight\.outputs\.ready == 'true'/);
 });
 
 test("the readiness classifier runs before every step that reads its output", async () => {
@@ -212,4 +216,22 @@ test("the fail-closed malformed-credential guard cannot fire before readiness", 
   assert.ok(guard, "the malformed-credential guard is missing");
   assert.match(String(guard.if), /steps\.readiness\.outputs\.ready == 'true'/, "the guard must only reject malformed credentials");
   assert.match(String(guard.run), /tskey-/, "the guard must keep the auth-key-vs-OAuth-client check");
+});
+
+test("an unusable credential pair is a configuration gap, not a red merge", async () => {
+  // Run 45967580663: client id 17 chars, secret 17 chars — present but dummy.
+  // Nothing in the codebase can fix that, so the run must be neutral (skipped)
+  // and only a human asking for mode=deploy may turn it into a failure.
+  const yaml = await (await import("../scripts/validate-workflows.mjs")).loadYaml();
+  const wf = yaml.load(readFileSync(".github/workflows/deploy.yml", "utf8"));
+  const steps = wf.jobs["network-preflight"].steps;
+  const classify = steps.find((step) => step.id === "readiness");
+  assert.match(String(classify.run), /placeholder_oauth_pair/, "placeholder pairs must be named as such");
+  assert.match(String(classify.run), /reason=/, "the reason must be published as an output");
+  // The only hard failure on the automatic path is a human's mode=deploy.
+  const hardFailures = steps.filter((step) => /mode=deploy/.test(String(step.run ?? "")) && /exit 1/.test(String(step.run ?? "")));
+  assert.equal(hardFailures.length, 1);
+  // No step may fail the job merely because the credentials are absent.
+  const failClosed = steps.find((step) => step.name === "Fail closed if networking secrets are missing");
+  assert.match(String(failClosed.if), /steps\.readiness\.outputs\.ready == 'true'/);
 });
