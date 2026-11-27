@@ -35,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
+import { MonidWorkbench } from './monid-workbench';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types (mirror the /api/super-admin/* responses)
@@ -1136,6 +1137,9 @@ export default function SuperAdminPage() {
                   </ul>
                 )}
               </section>
+
+              {/* Monid: search free, price free, run only with approval */}
+              <MonidWorkbench onToast={setToast} />
 
               {/* Configuration (env + API keys, no shell needed) */}
               <ConfigPanel onToast={setToast} />
