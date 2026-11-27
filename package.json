@@ -18,7 +18,7 @@
     "cpanel:health": "node scripts/cpanel-health.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --import ./tests/ts-alias-loader.mjs --test tests/*.test.mjs",
+    "test": "node scripts/run-unit-tests.mjs",
     "test:sharp": "node --test tests/image-processing.test.mjs",
     "test:integration": "tsx scripts/verify-login.ts && tsx scripts/test-integrations.ts && tsx scripts/test-ollama-cloud.ts && tsx scripts/test-sms-providers.ts && tsx scripts/test-voice-contact-center.ts",
     "verify": "npm run typecheck && npm run lint && npm test && npm run verify:workflows",
