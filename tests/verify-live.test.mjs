@@ -70,3 +70,12 @@ test("verify:live documents the health contract it enforces", async () => {
   // A real release identity is part of the gate, not decoration.
   assert.match(source, /\^\[0-9a-f\]\{40\}\$/);
 });
+
+test("verify:live refuses to save an unusable http jar for an https-only session", async () => {
+  const source = await readFile(new URL(SCRIPT, `file://${ROOT}`), "utf8");
+  // A __Secure- session cookie cannot be replayed over plain http, so the jar
+  // must not be written there with a reassuring "saved" line.
+  assert.match(source, /isSecureSessionCookie/);
+  assert.match(source, /an HTTPS-only session cookie cannot be replayed over plain http/);
+  assert.match(source, /new URL\(BASE\)\.protocol !== "https:"/);
+});

@@ -115,9 +115,25 @@ should be read from:
 
 ```bash
 cd /home/user/ALO-LEARNING-JOURNEY-PRODUCTION
-ADMIN_EMAIL="…" ADMIN_PASSWORD="…" npm run verify:live
-# or against the public URL: npm run verify:live -- --url=https://learn.alolabs.net
+ADMIN_EMAIL="…" ADMIN_PASSWORD="…" npm run verify:live -- --url=https://learn.alolabs.net --jar=/tmp/alo.jar
 ```
+
+Save the `--jar`. It makes the authenticated steps below a plain `curl -b`, with
+no CSRF dance and no copied token:
+
+```bash
+curl -sS -b /tmp/alo.jar https://learn.alolabs.net/api/health/diagnose | jq '.summary, .findings[]|select(.ok==false)'
+curl -sS -b /tmp/alo.jar 'https://learn.alolabs.net/api/health?details=1' | jq '.checks[]|select(.ok==false)'
+rm -f /tmp/alo.jar          # it is a live admin session; delete it when done
+```
+
+> **The jar must be captured over the scheme the browser uses.** In production
+> `src/lib/auth.ts` mints a `__Secure-next-auth.session-token` with `secure: true`,
+> and curl will not send a Secure cookie over plain `http`. So
+> `--url=http://127.0.0.1:3061 --jar=…` is refused on purpose (the check says why)
+> — use the https origin. If you only have the local port, put a TLS terminator in
+> front of it, e.g. `ssh -L 8443:127.0.0.1:3061` through the tunnel that already
+> serves the domain, and run with `--url=https://127.0.0.1:8443`.
 
 It exits 0 only when `/api/health` is 200 with a real 40-hex `releaseSha`, and —
 when credentials are supplied — when the sign-in produced a session that an
