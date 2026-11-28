@@ -343,3 +343,66 @@ jobs:
         run: |
           docker logs alo-ci-smoke --tail 80 || true
           docker rm -f alo-ci-smoke || true
+
+  e2e-playwright:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: ci
+          MYSQL_USER: ci
+          MYSQL_PASSWORD: ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      CI: 'true'
+      DATABASE_URL: "mysql://ci:ci@127.0.0.1:3306/ci"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies and Playwright Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Apply migrations and build production standalone app
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run build
+
+      - name: Run Playwright browser E2E suite
+        env:
+          PLAYWRIGHT_PORT: "3097"
+          PLAYWRIGHT_ADMIN_EMAIL: ci-e2e-admin@alolabs.invalid
+        run: |
+          PLAYWRIGHT_ADMIN_PASSWORD="$(node -e 'console.log(require("node:crypto").randomBytes(18).toString("hex"))')"
+          NEXTAUTH_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          JWT_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          VAULT_MASTER_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          ADMIN_PASSWORD_HASH="$(printf '%s' "$PLAYWRIGHT_ADMIN_PASSWORD" | node scripts/hash-admin-password.mjs | tail -n 1)"
+          export PLAYWRIGHT_ADMIN_PASSWORD NEXTAUTH_SECRET JWT_SECRET VAULT_MASTER_KEY ADMIN_PASSWORD_HASH
+          export NODE_ENV=production
+          export NEXTAUTH_URL=http://127.0.0.1:3097
+          export ADMIN_EMAIL="$PLAYWRIGHT_ADMIN_EMAIL"
+          export ADMIN_OTP_REQUIRED=false
+          export MARKETINGOS_ALLOW_REGISTRATION=true
+          export RELEASE_SHA="$GITHUB_SHA"
+          npm run test:e2e

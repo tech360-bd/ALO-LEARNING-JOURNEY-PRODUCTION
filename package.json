@@ -19,6 +19,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-unit-tests.mjs",
+    "test:e2e": "playwright test",
     "test:sharp": "node --test tests/image-processing.test.mjs",
     "test:integration": "tsx scripts/verify-login.ts && tsx scripts/test-integrations.ts && tsx scripts/test-ollama-cloud.ts && tsx scripts/test-sms-providers.ts && tsx scripts/test-voice-contact-center.ts",
     "verify": "npm run typecheck && npm run lint && npm test && npm run verify:workflows",
@@ -110,6 +111,7 @@
     "zustand": "^5.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/postcss": "^4.3.5",
     "@types/bcryptjs": "^3.0.0",
     "@types/node": "^22.20.5",

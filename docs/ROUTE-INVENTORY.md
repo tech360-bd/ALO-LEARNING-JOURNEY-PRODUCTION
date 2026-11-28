@@ -261,7 +261,7 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/v1/billing/usage` | GET |
 | `/api/v1/call-queues` | GET, POST |
 | `/api/v1/calls` | GET |
-| `/api/v1/calls/[id]` | GET |
+| `/api/v1/calls/[id]` | GET, PATCH |
 | `/api/v1/calls/[id]/analytics` | GET |
 | `/api/v1/calls/[id]/answer` | POST |
 | `/api/v1/calls/[id]/hangup` | POST |

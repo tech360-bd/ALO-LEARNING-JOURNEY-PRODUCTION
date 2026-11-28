@@ -55,6 +55,7 @@ test("an unreviewed moving ref is rejected", () => {
       validate: { "runs-on": "ubuntu-22.04", steps: [{ uses: "some/action@main" }] },
       "security-scan": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
       "docker-smoke": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
+      "e2e-playwright": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
     },
   });
   const messages = lintWorkflow("ci.yml", wf).map((f) => f.message).join(" | ");
@@ -67,6 +68,7 @@ test("a pinned SHA is accepted", () => {
       validate: { "runs-on": "ubuntu-22.04", steps: [{ uses: "tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c" }] },
       "security-scan": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
       "docker-smoke": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
+      "e2e-playwright": { "runs-on": "ubuntu-22.04", steps: [{ run: "true" }] },
     },
   }));
 });
