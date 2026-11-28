@@ -990,10 +990,10 @@ export async function addMemory(
   companyId?: string
 ): Promise<string | null> {
   try {
-    if (companyId !== undefined && !companyId.trim()) return null;
+    if (!companyId || !companyId.trim()) return null;
     const emp = await db.employee.findFirst({
       where: {
-        ...(companyId ? { companyId } : {}),
+        companyId,
         OR: [{ employeeId }, { id: employeeId }],
       },
       select: { id: true, companyId: true },

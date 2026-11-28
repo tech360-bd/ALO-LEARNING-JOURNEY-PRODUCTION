@@ -12,7 +12,6 @@
  * The two systems are independent; neither accepts the other's credentials.
  */
 import { timingSafeEqual } from "node:crypto";
-import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import type { NextAuthOptions, Session } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -44,12 +43,15 @@ export function isAdminAuthConfigured(): boolean {
   return isAdminAuthenticationConfigured();
 }
 
+const credentialsProvider =
+  (CredentialsProvider as unknown as { default?: typeof CredentialsProvider }).default ?? CredentialsProvider;
+
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET || (process.env.NODE_ENV === "production" ? undefined : "alo-local-development-only-secret"),
   session: { strategy: "jwt", maxAge: 60 * 60 * 8 },
   pages: { signIn: "/login" },
   providers: [
-    CredentialsProvider({
+    credentialsProvider({
       name: "ALO administrator",
       credentials: {
         email: { label: "Email", type: "email" },
@@ -131,7 +133,7 @@ export async function requireOwner(): Promise<{ ownerId: string; role: string }>
  */
 export async function requireOwnerOrResponse(): Promise<
   | { owner: { ownerId: string; role: string }; response?: never }
-  | { owner?: never; response: NextResponse }
+  | { owner?: never; response: Response }
 > {
   try {
     const owner = await requireOwner();
@@ -139,7 +141,7 @@ export async function requireOwnerOrResponse(): Promise<
   } catch (err: unknown) {
     const status = (err as { statusCode?: number })?.statusCode ?? 401;
     return {
-      response: NextResponse.json(
+      response: Response.json(
         { error: status === 503 ? "auth_not_configured" : "unauthorized" },
         { status, headers: { "Cache-Control": "no-store" } }
       ),
