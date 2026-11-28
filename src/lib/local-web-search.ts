@@ -34,7 +34,8 @@
  * reach a model or a database.
  */
 
-import { isUrlSafe } from "@/lib/ssrf";
+import { fetchSafePublicUrl, isUrlSafe } from "@/lib/ssrf";
+import { readLimitedStream } from "@/lib/read-limited-stream.mjs";
 import { runtimeEnvSync } from "@/lib/runtime-config";
 
 export type SearchBackend = "searxng" | "wigolo" | "ddg-html" | "none";
@@ -208,11 +209,13 @@ async function searchWigolo(query: string, limit: number): Promise<WebSearchResu
 async function searchDuckDuckGo(query: string, limit: number): Promise<WebSearchResult[]> {
   const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
     headers: { "user-agent": "Mozilla/5.0 (compatible; ALO-Learning-Journey/1.0)" },
+    redirect: "manual",
     signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
+  const bytes = await readLimitedStream(res.body, 2_000_000);
+  const html = Buffer.from(bytes).toString("utf8");
   const out: WebSearchResult[] = [];
   const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]{0,600}?class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
@@ -315,7 +318,8 @@ async function extractCrawl4ai(url: string): Promise<{ title: string | null; tex
 }
 
 /**
- * The native extractor: fetch the page (SSRF-guarded) and turn it into text.
+ * The native extractor: fetch the page (SSRF-guarded, DNS-pinned, manual redirect
+ * verification, stream-bounded via readLimitedStream) and turn it into text.
  * Always available, so a scrape never depends on Python or Docker running.
  */
 async function extractNative(url: string, maxChars: number): Promise<{ title: string | null; text: string; truncated: boolean }> {
@@ -323,29 +327,29 @@ async function extractNative(url: string, maxChars: number): Promise<{ title: st
   if (!safe.allowed) {
     throw new Error(`refused by SSRF guard: ${safe.reason ?? "unsafe host"}`);
   }
-  let res: Response;
+  let res;
   try {
-    res = await fetch(url, {
+    res = await fetchSafePublicUrl(url, {
+      method: "GET",
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; ALO-Learning-Journey/1.0; +local-first)",
         accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
       },
-      redirect: "follow",
-      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
-      cache: "no-store",
+      maxRedirects: 3,
+      maxBytes: 2_000_000,
+      timeoutMs: EXTRACT_TIMEOUT_MS,
     });
   } catch (err) {
     throw new Error(describeFetchError(err));
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const type = res.headers.get("content-type") ?? "";
-  if (!/text\/|html|xml|json/.test(type)) throw new Error(`unsupported content-type: ${type.slice(0, 60)}`);
+  if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+  const rawType = res.headers["content-type"];
+  const type = Array.isArray(rawType) ? rawType[0] ?? "" : rawType ?? "";
+  if (type && !/text\/|html|xml|json/.test(type)) throw new Error(`unsupported content-type: ${type.slice(0, 60)}`);
 
-  // Read at most 2 MB: a huge page must not exhaust memory on a 1-box deploy.
-  const buf = Buffer.from(await res.arrayBuffer());
-  const slice = buf.subarray(0, 2_000_000).toString("utf8");
-  const converted = htmlToText(slice, { maxChars });
-  return { ...converted, truncated: converted.truncated || buf.length >= 2_000_000 };
+  const text = Buffer.from(res.body).toString("utf8");
+  const converted = htmlToText(text, { maxChars });
+  return { ...converted, truncated: converted.truncated };
 }
 
 /**

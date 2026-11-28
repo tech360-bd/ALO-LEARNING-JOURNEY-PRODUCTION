@@ -18,6 +18,12 @@
  *   5. Compare connected IP against blocklist at fetch time (defense in depth)
  */
 
+import http from 'node:http';
+import https from 'node:https';
+import { lookup as dnsLookup } from 'node:dns';
+import { isIP } from 'node:net';
+import { BodyTooLargeError, readLimitedStream } from './read-limited-stream.mjs';
+
 const BLOCKED_HOSTNAMES = new Set<string>([
   'localhost',
   'ip6-localhost',
@@ -117,33 +123,47 @@ function isIpLiteral(s: string): boolean {
  *   - ff00::/8 (IPv6 multicast)
  */
 export function isPrivateIp(ip: string): boolean {
-  // Strip IPv6 brackets
-  const clean = ip.replace(/^\[|\]$/g, '');
+  // Strip IPv6 brackets and zone index if present
+  const clean = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase();
+  const ipVersion = isIP(clean);
+  if (ipVersion === 0) return true; // fail closed on invalid IP strings
 
   // IPv4 check
-  const v4Match = clean.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4Match) {
-    const [a, b] = v4Match.slice(1).map((s) => parseInt(s, 10));
-    if (a === 0) return true;            // 0.0.0.0/8
-    if (a === 10) return true;           // 10.0.0.0/8
-    if (a === 127) return true;          // 127.0.0.0/8
-    if (a === 169 && b === 254) return true; // 169.254.0.0/16 (cloud metadata)
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-    if (a === 192 && b === 168) return true; // 192.168.0.0/16
-    if (a >= 224) return true;           // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
+  if (ipVersion === 4) {
+    const [a, b] = clean.split('.').map((s) => parseInt(s, 10));
+    if (a === 0) return true;                          // 0.0.0.0/8
+    if (a === 10) return true;                         // 10.0.0.0/8
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
+    if (a === 127) return true;                        // 127.0.0.0/8
+    if (a === 169 && b === 254) return true;           // 169.254.0.0/16 (cloud metadata)
+    if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;           // 192.168.0.0/16
+    if (a >= 224) return true;                         // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
     return false;
   }
 
-  // IPv6 check — normalize to lowercase
-  const v6 = clean.toLowerCase();
-  if (v6 === '::1' || v6 === '::') return true;          // loopback / unspecified
-  if (v6.startsWith('fc') || v6.startsWith('fd')) return true; // fc00::/7 unique-local
-  if (v6.startsWith('fe8') || v6.startsWith('fe9') ||
-      v6.startsWith('fea') || v6.startsWith('feb')) return true; // fe80::/10 link-local
-  if (v6.startsWith('ff')) return true;                   // ff00::/8 multicast
-  // IPv4-mapped IPv6: ::ffff:a.b.c.d
-  const v4Mapped = v6.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4Mapped) return isPrivateIp(v4Mapped[1]);
+  // IPv6 check
+  if (clean === '::1' || clean === '::' || clean === '0:0:0:0:0:0:0:1' || clean === '0:0:0:0:0:0:0:0') {
+    return true; // loopback / unspecified
+  }
+  if (clean.startsWith('fc') || clean.startsWith('fd')) return true; // fc00::/7 unique-local
+  if (clean.startsWith('fe8') || clean.startsWith('fe9') ||
+      clean.startsWith('fea') || clean.startsWith('feb')) return true; // fe80::/10 link-local
+  if (clean.startsWith('ff')) return true;                             // ff00::/8 multicast
+
+  // IPv4-mapped IPv6 in dotted form: ::ffff:a.b.c.d (or 0:0:0:0:0:ffff:a.b.c.d)
+  const v4Dotted = clean.match(/^(?:(?:0{1,4}:){5}|::)ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4Dotted) return isPrivateIp(v4Dotted[1]);
+
+  // IPv4-mapped IPv6 in normalized hex form from WHATWG URL parser: e.g. ::ffff:7f00:1
+  const v4Hex = clean.match(/^(?:(?:0{1,4}:){5}|::)ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (v4Hex) {
+    const hi = parseInt(v4Hex[1], 16);
+    const lo = parseInt(v4Hex[2], 16);
+    const mappedV4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isPrivateIp(mappedV4);
+  }
+
   return false;
 }
 
@@ -185,4 +205,128 @@ export function safeWebhookFetchOptions(): RequestInit {
       Accept: 'application/json, */*',
     },
   };
+}
+
+export interface SafeFetchOptions {
+  method?: 'GET' | 'HEAD';
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  maxBytes?: number;
+  maxRedirects?: number;
+  signal?: AbortSignal;
+}
+
+export interface SafeFetchResponse {
+  url: string;
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Uint8Array;
+}
+
+/**
+ * Perform a bounded HTTP(S) GET/HEAD request with SSRF protection on every hop:
+ *   1. Validates URL scheme + resolves DNS + rejects any private/reserved IP via `isUrlSafe`.
+ *   2. Pins the validated IP directly on the socket via `lookup` (prevents DNS rebinding TOCTOU).
+ *   3. Disables automatic redirects; follows up to `maxRedirects` manually after re-checking `isUrlSafe`.
+ *   4. Reads response stream via `readLimitedStream` (cancels oversized bodies before buffering).
+ */
+export async function fetchSafePublicUrl(
+  rawUrl: string,
+  options: SafeFetchOptions = {}
+): Promise<SafeFetchResponse> {
+  const method = options.method ?? 'GET';
+  const timeoutMs = options.timeoutMs ?? 12_000;
+  const maxBytes = options.maxBytes ?? 2_000_000;
+  const maxRedirects = options.maxRedirects ?? 3;
+
+  let currentUrl = rawUrl;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const safety = await isUrlSafe(currentUrl);
+    if (!safety.allowed) {
+      throw new Error(`refused by SSRF guard: ${safety.reason ?? 'unsafe host'}`);
+    }
+
+    const parsed = new URL(currentUrl);
+    const transport = parsed.protocol === 'https:' ? https : http;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
+
+    const hopResult = await new Promise<{
+      status: number;
+      headers: Record<string, string | string[] | undefined>;
+      body: Uint8Array;
+      location?: string;
+    }>((resolve, reject) => {
+      const req = transport.request(
+        parsed,
+        {
+          method,
+          agent: false,
+          signal,
+          headers: options.headers,
+          lookup(hostname, _opts, cb) {
+            const clean = hostname.replace(/^\[|\]$/g, '');
+            if (isIP(clean)) {
+              if (isPrivateIp(clean)) return cb(new Error('Destination IP is not allowed'), '', 4);
+              return cb(null, clean, isIP(clean) === 6 ? 6 : 4);
+            }
+            dnsLookup(hostname, { all: true }, (err, records) => {
+              if (err || !records || records.length === 0) {
+                return cb(new Error(`DNS lookup failed for ${hostname}`), '', 4);
+              }
+              for (const rec of records) {
+                if (isPrivateIp(rec.address)) {
+                  return cb(new Error(`Hostname ${hostname} resolved to blocked IP`), '', 4);
+                }
+              }
+              const first = records[0];
+              cb(null, first.address, first.family);
+            });
+          },
+        },
+        async (res) => {
+          const status = res.statusCode ?? 502;
+          const headers = res.headers;
+          if (status >= 300 && status < 400) {
+            const loc = typeof headers.location === 'string' ? headers.location : undefined;
+            res.destroy();
+            resolve({ status, headers, body: new Uint8Array(0), location: loc });
+            return;
+          }
+          if (method === 'HEAD' || maxBytes === 0) {
+            res.destroy();
+            resolve({ status, headers, body: new Uint8Array(0) });
+            return;
+          }
+          try {
+            const body = await readLimitedStream(res, maxBytes);
+            resolve({ status, headers, body });
+          } catch (err) {
+            res.destroy();
+            reject(err instanceof BodyTooLargeError ? err : new Error('Failed reading response stream'));
+          }
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    if (hopResult.status >= 300 && hopResult.status < 400 && hopResult.location) {
+      if (hop === maxRedirects) {
+        throw new Error(`Too many redirects (max ${maxRedirects})`);
+      }
+      currentUrl = new URL(hopResult.location, currentUrl).toString();
+      continue;
+    }
+
+    return {
+      url: currentUrl,
+      status: hopResult.status,
+      headers: hopResult.headers,
+      body: hopResult.body,
+    };
+  }
+
+  throw new Error('Redirect limit exceeded');
 }

@@ -8,7 +8,7 @@
 //  - Only http(s) public URLs. Same-origin app pages are fetched via the
 //    public site URL, never via localhost (avoids SSRF + auth bypass).
 
-import { isUrlSafe } from "@/lib/ssrf";
+import { fetchSafePublicUrl, isUrlSafe } from "@/lib/ssrf";
 
 export interface BrowseResult {
   url: string;
@@ -92,30 +92,19 @@ export async function browseUrl(rawUrl: string): Promise<BrowseResult> {
   let status: number | null = null;
   let html = "";
   try {
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const res = await fetch(current, {
-        method: "GET",
-        redirect: "manual",
-        cache: "no-store",
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { "user-agent": "ALO-SelfHeal-Browser/1.0 (read-only error detection)" },
-      });
-      status = res.status;
-      if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get("location");
-        if (!loc || hop === MAX_REDIRECTS) break;
-        current = new URL(loc, current).toString();
-        const nextSafety = await isUrlSafe(current);
-        if (!nextSafety.allowed) {
-          return { ...base, status, error: `redirect blocked by SSRF guard`, latencyMs: Date.now() - start };
-        }
-        continue;
-      }
-      const text = await res.text();
-      html = text.slice(0, MAX_BYTES);
-      if (text.length > MAX_BYTES) base.truncated = true;
-      break;
-    }
+    const res = await fetchSafePublicUrl(current, {
+      method: "GET",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      timeoutMs: TIMEOUT_MS,
+      maxBytes: 2_000_000,
+      maxRedirects: MAX_REDIRECTS,
+      headers: { "user-agent": "ALO-SelfHeal-Browser/1.0 (read-only error detection)" },
+    });
+    current = res.url;
+    status = res.status;
+    const text = Buffer.from(res.body).toString("utf8");
+    html = text.slice(0, MAX_BYTES);
+    if (text.length > MAX_BYTES) base.truncated = true;
   } catch (err) {
     return {
       ...base,
@@ -139,18 +128,18 @@ export async function browseUrl(rawUrl: string): Promise<BrowseResult> {
   };
 }
 
-/** HEAD-check a list of links for broken targets (sequential, capped). */
+/** HEAD-check a list of links for broken targets (sequential, capped, SSRF-safe redirects). */
 export async function checkLinks(links: string[], limit = 20): Promise<string[]> {
   const broken: string[] = [];
   for (const link of links.slice(0, limit)) {
     const safety = await isUrlSafe(link);
     if (!safety.allowed) continue;
     try {
-      const res = await fetch(link, {
+      const res = await fetchSafePublicUrl(link, {
         method: "HEAD",
-        redirect: "follow",
-        cache: "no-store",
-        signal: AbortSignal.timeout(8_000),
+        maxRedirects: MAX_REDIRECTS,
+        maxBytes: 0,
+        timeoutMs: 8_000,
         headers: { "user-agent": "ALO-SelfHeal-Browser/1.0" },
       });
       if (res.status >= 400) broken.push(`${link} → HTTP ${res.status}`);
