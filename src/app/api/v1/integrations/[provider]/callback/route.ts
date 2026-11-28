@@ -5,17 +5,12 @@
  * here with `?code=<authorization_code>&state=<state_token>` (and
  * optionally `&error=...` if the user denied consent).
  *
- * Backend responsibilities (per Integration Setup Agent contract):
- *   1. Verify the `state` token against OAuthState (constant-time).
- *   2. Reject if state is unknown, expired, or already consumed.
- *   3. Exchange the code for tokens server-to-server (PKCE verifier
- *      in the request body — never sent to the browser).
- *   4. Encrypt access_token + refresh_token via the vault (AES-256-GCM).
- *   5. Mark the Integration row as `connected`.
- *   6. Mark OAuthState.consumed=true.
- *   7. Redirect the browser to the integration wizard.
- *
- * Tokens NEVER touch the browser, the AI model, or logs.
+ * Security:
+ *   - Atomically claims OAuthState (`consumed: false -> true`, unexpired)
+ *     BEFORE calling the provider's token endpoint, preventing replay races.
+ *   - Enforces timeout, redirect: 'error', and bounded reads on token exchange.
+ *   - Uses NEXT_PUBLIC_SITE_URL / NEXT_PUBLIC_APP_URL for browser redirects so
+ *     reverse-proxied internal origins (e.g. 127.0.0.1:3061) never leak.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
@@ -23,15 +18,34 @@ import { getProvider, resolveOAuthClientId, resolveOAuthClientSecret, getCallbac
 import { validateStateToken } from '@/lib/pkce';
 import { encryptSecret, maskSecret } from '@/lib/vault';
 import { emitEvent } from '@/lib/events';
+import { validateShopifyShopDomain } from '@/lib/provider-http';
+import { readLimitedStream } from '@/lib/read-limited-stream.mjs';
 
 export const dynamic = 'force-dynamic';
+
+function buildCallbackRedirect(request: NextRequest, relativeTarget: string): NextResponse {
+  const configured = (process.env.NEXT_PUBLIC_SITE_URL || process.env.NEXT_PUBLIC_APP_URL || '').trim();
+  let origin: string | null = null;
+  if (configured) {
+    try {
+      origin = new URL(configured).origin;
+    } catch {
+      origin = null;
+    }
+  }
+  const targetUrl = origin ? new URL(relativeTarget, origin) : new URL(relativeTarget, request.url);
+  const res = NextResponse.redirect(targetUrl);
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string }> }) {
   const { provider: providerSlug } = await params;
   const redirectBase = '/dashboard?view=integrations';
+  const safeProvider = encodeURIComponent(providerSlug);
   const provider = getProvider(providerSlug);
   if (!provider) {
-    return NextResponse.redirect(new URL(`${redirectBase}&error=unknown_provider`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&error=unknown_provider`);
   }
 
   const url = new URL(request.url);
@@ -42,58 +56,87 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   // User denied consent on the provider's page
   if (error) {
-    return NextResponse.redirect(
-      new URL(`${redirectBase}&provider=${providerSlug}&error=${encodeURIComponent(error)}&desc=${encodeURIComponent(errorDesc || '')}`, request.url)
+    return buildCallbackRedirect(
+      request,
+      `${redirectBase}&provider=${safeProvider}&error=${encodeURIComponent(error)}&desc=${encodeURIComponent((errorDesc || '').slice(0, 200))}`
     );
   }
   if (!code || !state) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=missing_params`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=missing_params`);
   }
 
   // Find the OAuthState row by state token (and verify it's valid)
   const oauthState = await db.oAuthState.findUnique({ where: { state } });
   if (!oauthState || oauthState.provider !== providerSlug) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=invalid_state`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=invalid_state`);
   }
   if (oauthState.consumed) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=state_consumed`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=state_consumed`);
   }
   if (oauthState.expiresAt.getTime() < Date.now()) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=state_expired`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=state_expired`);
   }
 
-  // Constant-time state comparison (defense in depth — the DB lookup already
-  // confirms the state is unique; this also catches a state token that was
-  // tampered with between authorize and callback while the row was still
-  // in flight).
   if (!validateStateToken(oauthState.state, state)) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=state_mismatch`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=state_mismatch`);
   }
 
   // Resolve OAuth client credentials
   const clientId = resolveOAuthClientId(provider);
   const clientSecret = resolveOAuthClientSecret(provider);
   if (!clientId || !clientSecret) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=client_not_configured`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=client_not_configured`);
+  }
+
+  // Atomically claim the single-use OAuthState BEFORE hitting the external token endpoint
+  const claimed = await db.oAuthState.updateMany({
+    where: {
+      id: oauthState.id,
+      consumed: false,
+      expiresAt: { gt: new Date() },
+    },
+    data: { consumed: true },
+  });
+  if (claimed.count !== 1) {
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=state_consumed`);
+  }
+
+  let tokenUrl = provider.tokenUrl!;
+  if (tokenUrl.includes('{shop}')) {
+    const rawShop = url.searchParams.get('shop') || '';
+    try {
+      const validShop = validateShopifyShopDomain(rawShop);
+      tokenUrl = tokenUrl.replace('{shop}', validShop);
+    } catch {
+      return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=invalid_shop`);
+    }
   }
 
   // Exchange code → tokens (server-to-server; PKCE verifier only sent here)
-  const tokenUrl = provider.tokenUrl!.replace('{shop}', providerSlug); // Shopify has {shop} placeholder, others don't
-  const tokenRes = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: getCallbackUrl(providerSlug),
-      client_id: clientId,
-      client_secret: clientSecret,
-      ...(provider.supportsPkce ? { code_verifier: oauthState.codeVerifier } : {}),
-    }),
-  });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch(tokenUrl, {
+      method: 'POST',
+      signal: AbortSignal.timeout(15_000),
+      redirect: 'error',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: oauthState.redirectUri || getCallbackUrl(providerSlug),
+        client_id: clientId,
+        client_secret: clientSecret,
+        ...(provider.supportsPkce ? { code_verifier: oauthState.codeVerifier } : {}),
+      }),
+    });
+  } catch (err) {
+    console.error(`[integrations:${providerSlug}] token exchange network error`, err instanceof Error ? err.message : String(err));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=token_exchange`);
+  }
 
+  const rawTokenBody = await readLimitedStream(tokenRes.body, 256 * 1024).catch(() => Buffer.alloc(0));
   if (!tokenRes.ok) {
-    const detail = await tokenRes.text();
+    const detail = rawTokenBody.toString('utf8');
     console.error(`[integrations:${providerSlug}] token exchange failed`, tokenRes.status, detail.slice(0, 200));
     await db.integrationLog.create({
       data: {
@@ -104,24 +147,34 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         actorUserId: oauthState.userId,
         source: 'api',
       },
-    });
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=token_exchange`, request.url));
+    }).catch(() => undefined);
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=token_exchange`);
   }
 
-  const tokens: any = await tokenRes.json();
-  const accessToken: string = tokens.access_token;
-  const refreshToken: string | undefined = tokens.refresh_token;
-  const expiresIn: number | undefined = tokens.expires_in;
-  const grantedScopes: string[] = tokens.scope ? String(tokens.scope).split(/[\s,]+/) : provider.scopes;
+  let tokens: Record<string, unknown>;
+  try {
+    tokens = JSON.parse(rawTokenBody.toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=token_exchange`);
+  }
+  const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token : '';
+  const refreshToken = typeof tokens.refresh_token === 'string' ? tokens.refresh_token : undefined;
+  const expiresIn = typeof tokens.expires_in === 'number' ? tokens.expires_in : undefined;
+  const grantedScopes: string[] = typeof tokens.scope === 'string'
+    ? tokens.scope.split(/[\s,]+/).filter(Boolean)
+    : provider.scopes;
 
   if (!accessToken) {
-    return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&error=no_access_token`, request.url));
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=no_access_token`);
   }
 
   // Encrypt + persist secrets
-  const integration = await db.integration.findFirstOrThrow({
+  const integration = await db.integration.findFirst({
     where: { companyId: oauthState.companyId, provider: providerSlug },
   });
+  if (!integration) {
+    return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&error=integration_not_found`);
+  }
 
   const accessEncrypted = encryptSecret(accessToken);
   await db.integrationSecret.upsert({
@@ -139,7 +192,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     });
   }
 
-  // Mark integration connected + state consumed
+  // Mark integration connected (OAuthState was already atomically claimed above)
   await db.$transaction([
     db.integration.update({
       where: { id: integration.id },
@@ -154,7 +207,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         updatedBy: oauthState.userId,
       },
     }),
-    db.oAuthState.update({ where: { id: oauthState.id }, data: { consumed: true } }),
     db.integrationLog.create({
       data: {
         integrationId: integration.id,
@@ -177,5 +229,5 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     metadata: { provider: providerSlug, scopes: grantedScopes },
   });
 
-  return NextResponse.redirect(new URL(`${redirectBase}&provider=${providerSlug}&status=connected`, request.url));
+  return buildCallbackRedirect(request, `${redirectBase}&provider=${safeProvider}&status=connected`);
 }
