@@ -1,8 +1,8 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useApiQuery } from "@/hooks/use-api-query";
-import { useAppStore } from "@/stores/app-store";
+import { useAppStore, type ViewId as StoreViewId } from "@/stores/app-store";
+import type { ViewId } from "@/types";
 import {
   Card,
   CardContent,
@@ -144,7 +144,8 @@ function HrmSkeleton() {
 }
 
 export default function HrmView() {
-  const { setActiveView } = useAppStore();
+  const { setActiveView: storeSetActiveView } = useAppStore();
+  const setActiveView = (view: ViewId) => storeSetActiveView(view as StoreViewId);
 
   const { data: dashData, isLoading: dashLoading, error, refetch } =
     useApiQuery<DashboardSummary>("/api/dashboard");

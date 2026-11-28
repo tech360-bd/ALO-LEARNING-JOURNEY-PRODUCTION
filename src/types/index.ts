@@ -11,9 +11,42 @@ export type ViewId =
   | 'content'
   | 'analytics'
   | 'team'
+  | 'messages'
+  | 'announcements'
+  | 'audit-logs'
   | 'ai-agents'
+  | 'ai-models'
   | 'subscriptions'
-  | 'settings';
+  | 'settings'
+  | 'voice-agents'
+  | 'calls'
+  | 'voice-studio'
+  | 'contact-center'
+  | 'billing-voice'
+  | 'students'
+  | 'employees'
+  | 'departments'
+  | 'programs'
+  | 'attendance'
+  | 'assignments'
+  | 'exams'
+  | 'schedule'
+  | 'finance'
+  | 'fees'
+  | 'salary'
+  | 'hrm'
+  | 'leave'
+  | 'partners';
+
+export interface DashboardActivityItem {
+  id: string;
+  type: string;
+  description: string;
+  createdAt: string;
+  message?: string;
+  time?: string;
+  platform?: string;
+}
 
 // Dashboard stats shape — returned by GET /api/dashboard
 export interface DashboardStats {
@@ -23,6 +56,7 @@ export interface DashboardStats {
   totalCampaigns: number;
   totalContents: number;
   totalAgents: number;
+  activeAgents?: number;
   activeIntegrations: number;
   totalSmsSent: number;
   totalSocialAccounts: number;
@@ -51,7 +85,8 @@ export interface DashboardStats {
   scheduledPosts: number;
   activeCampaigns: number;
   connectedPlatforms: number;
+  totalPlatforms?: number;
   platformStats: Array<{ platform: string; followers: number; engagement: number }>;
   weeklyData: Array<{ day: string; leads: number; engagement: number; reach: number }>;
-  recentActivity: Array<{ id: string; type: string; description: string; createdAt: string }>;
+  recentActivity: DashboardActivityItem[];
 }

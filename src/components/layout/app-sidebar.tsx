@@ -1,8 +1,7 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useAuth } from "@/hooks/use-auth";
-import { useAppStore } from "@/stores/app-store";
+import { useAppStore, type ViewId as StoreViewId } from "@/stores/app-store";
 import type { ViewId } from "@/types";
 import {
   LayoutDashboard,
@@ -111,12 +110,12 @@ export function AppSidebar() {
                   <SidebarMenu>
                     {section.items.map((item) => {
                       const Icon = item.icon;
-                      const isActive = activeView === item.id;
+                      const isActive = (activeView as string) === item.id;
                       return (
                         <SidebarMenuItem key={item.id}>
                           <SidebarMenuButton
                             isActive={isActive}
-                            onClick={() => setActiveView(item.id)}
+                            onClick={() => setActiveView(item.id as StoreViewId)}
                             tooltip={item.label}
                           >
                             <Icon className="h-4 w-4" />

@@ -1,4 +1,3 @@
-// @ts-nocheck — legacy WebSocket hook pending realtime client refactor
 // ─── AISMH Real-Time React Hooks ────────────────────────────────────────────────
 // useRealtime(event, handler) — subscribe to a real-time event with auto-cleanup
 // useRealtimeConnection() — get connection status of the WebSocket client

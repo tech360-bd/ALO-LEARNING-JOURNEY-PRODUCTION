@@ -51,6 +51,7 @@ interface AppState {
   isLoading: boolean;
   isSidebarOpen: boolean;
   currentCompany: Company | null;
+  institution?: { id: string; name?: string } | null;
 
   // Navigation
   activeView: ViewId;
@@ -70,6 +71,7 @@ export const useAppStore = create<AppState>((set) => ({
   isLoading: true,
   isSidebarOpen: true,
   currentCompany: null,
+  institution: null,
   activeView: 'dashboard',
 
   setUser: (user) => set({
@@ -77,6 +79,7 @@ export const useAppStore = create<AppState>((set) => ({
     isAuthenticated: !!user,
     isLoading: false,
     currentCompany: user ? { id: (user as any).companyId || '', name: (user as any).companyName || '', slug: '' } : null,
+    institution: user ? { id: (user as any).companyId || '', name: (user as any).companyName || '' } : null,
   }),
   logout: () => {
     if (typeof window !== 'undefined') {
@@ -84,7 +87,7 @@ export const useAppStore = create<AppState>((set) => ({
       if (token) void fetch('/api/settings/sessions/current', { method: 'DELETE', headers: { Authorization: `Bearer ${token}` }, keepalive: true }).catch(() => {});
       localStorage.removeItem('mos_token');
     }
-    set({ user: null, isAuthenticated: false, isLoading: false, activeView: 'dashboard', currentCompany: null });
+    set({ user: null, isAuthenticated: false, isLoading: false, activeView: 'dashboard', currentCompany: null, institution: null });
   },
   setLoading: (isLoading) => set({ isLoading }),
   setActiveView: (activeView) => set({ activeView }),

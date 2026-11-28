@@ -20,6 +20,7 @@ export const REALTIME_EVENTS = {
   // Notifications
   NOTIFICATION: "notification",
   ALERT: "alert",
+  MESSAGE_NEW: "message:new",
 
   // System
   CONNECTED: "connected",
@@ -28,6 +29,11 @@ export const REALTIME_EVENTS = {
 } as const;
 
 export type RealtimeEventType = typeof REALTIME_EVENTS[keyof typeof REALTIME_EVENTS];
+export type RealtimeSystemEventType = "connected" | "disconnected" | "heartbeat";
+
+export type RealtimeEventDataMap = {
+  [K in RealtimeEventType | RealtimeSystemEventType]: Record<string, unknown>;
+};
 
 export interface RealtimeEvent<T = unknown> {
   type: RealtimeEventType;

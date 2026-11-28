@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState, useMemo } from "react";
@@ -537,7 +536,7 @@ export function SocialAccountsView() {
                       Select the social media platform you want to connect.
                     </p>
                     <div className="grid grid-cols-3 sm:grid-cols-3 gap-3">
-                      {(data?.platforms || missingPlatforms.length > 0 ? data?.platforms : ["Facebook", "Instagram", "LinkedIn", "X", "YouTube", "TikTok", "Pinterest", "Telegram"]).map(
+                      {(data?.platforms && data.platforms.length > 0 ? data.platforms : ["Facebook", "Instagram", "LinkedIn", "X", "YouTube", "TikTok", "Pinterest", "Telegram"]).map(
                         (platform) => {
                           const isConnected =
                             data?.connectedPlatforms?.includes(platform);
