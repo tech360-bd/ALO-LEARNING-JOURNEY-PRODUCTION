@@ -21,6 +21,7 @@ import {
   isAdminAuthenticationConfigured,
   isAdminOtpRequired,
 } from "@/lib/auth-config";
+import { readBearerToken } from "@/lib/bearer-auth";
 import { verifyAdminCredentials } from "@/lib/admin-password";
 import { SignJWT, jwtVerify } from "jose";
 import type { Prisma } from '@prisma/client';
@@ -291,12 +292,12 @@ export interface SessionUser {
 export async function getSessionUser(request: Request): Promise<SessionUser | null> {
   try {
     const authHeader = request.headers.get('authorization');
-    let token: string | null | undefined = authHeader?.replace('Bearer ', '');
+    let token: string | null = readBearerToken(authHeader);
 
     // Fallback: check cookie
     if (!token) {
       const cookieHeader = request.headers.get('cookie') || '';
-      const match = cookieHeader.match(/mos_token=([^;]+)/);
+      const match = cookieHeader.match(/(?:^|;\s*)mos_token=([^;]+)/);
       token = match ? match[1] : null;
     }
 
