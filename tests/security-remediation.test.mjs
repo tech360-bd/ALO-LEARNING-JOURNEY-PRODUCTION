@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,7 +88,7 @@ test("Phase 5: media-token fails closed in production when NEXTAUTH_SECRET is un
     await assert.rejects(() => mintMediaToken("/avatar-videos/test.mp4"), /NEXTAUTH_SECRET/);
     assert.equal(await verifyMediaToken("0".repeat(32), "/avatar-videos/test.mp4"), false);
 
-    process.env.NEXTAUTH_SECRET = "test-prod-media-secret-32-chars-min";
+    process.env.NEXTAUTH_SECRET = crypto.randomBytes(32).toString("hex");
     const tok = await mintMediaToken("/avatar-videos/test.mp4");
     assert.equal(await verifyMediaToken(tok, "/avatar-videos/test.mp4"), true);
     assert.equal(await verifyMediaToken(tok, "/avatar-videos/other.mp4"), false);

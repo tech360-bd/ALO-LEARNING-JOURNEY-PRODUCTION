@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { hashPassword, issueSessionToken } from '@/lib/auth';
 
-// `/api/auth/*` is public in middleware.ts (next-auth needs it), so on the
+// `/api/auth/*` is public in src/proxy.ts (next-auth needs it), so on the
 // production site this endpoint is reachable by anyone. Self-service MarketingOS
 // sign-up therefore fails closed in production unless explicitly enabled;
 // bootstrap the first account with `prisma/seed.ts` instead.
