@@ -3,35 +3,28 @@ import { db } from "@/lib/db";
 import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { generateImageFile } from "@/lib/ai";
-import { spawnSync } from "child_process";
+import {
+  escapeDrawtext,
+  execAsync,
+  resolveSafeMediaInputPath,
+  resolveVideoFontFile,
+  validateVoiceId,
+} from "@/lib/video-exec";
 import { promises as fs } from "fs";
 import fsSync from "fs";
 import path from "path";
 
 const VIDEO_DIR = path.join(process.cwd(), "storage", "videos");
 const ASSET_DIR = path.join(process.cwd(), "storage", "scene-assets");
-const FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-function exec(bin: string, args: string[], timeoutMs = 600000): string {
-  try {
-    const result = spawnSync(bin, args, { timeout: timeoutMs, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    if (result.status !== 0) {
-      const stderr = (result.stderr || "").slice(0, 400);
-      throw new Error(`Command failed: ${bin} ${args.slice(0, 5).join(" ")}...\n${stderr}`);
-    }
-    return (result.stdout || "").trim();
-  } catch (e: any) {
-    if (e.message && e.message.startsWith("Command failed:")) throw e;
-    throw new Error(`Command failed: ${bin} ${args.slice(0, 5).join(" ")}...\n${(e.stderr || e.message || "").slice(0, 400)}`);
-  }
+async function probeDuration(filePath: string): Promise<number> {
+  return parseFloat(
+    await execAsync("ffprobe", ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath])
+  );
 }
 
-function probeDuration(filePath: string): number {
-  return parseFloat(exec("ffprobe", ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath]));
-}
-
-function probeVideo(filePath: string) {
-  const json = exec("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath]);
+async function probeVideo(filePath: string) {
+  const json = await execAsync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath]);
   const data = JSON.parse(json);
   const v = data.streams.find((s: any) => s.codec_type === "video");
   const a = data.streams.find((s: any) => s.codec_type === "audio");
@@ -73,10 +66,18 @@ export async function POST(req: Request) {
 
   const topic = body.topic || "Untitled";
   const textInput = body.text || body.transcript || "";
-  const audioUpload = body.audioPath || null;
-  const voice = body.voice || "bn";
+  const rawAudioPath = body.audioPath || null;
+  const audioUpload = rawAudioPath ? await resolveSafeMediaInputPath(rawAudioPath) : null;
+  if (rawAudioPath && !audioUpload) {
+    return NextResponse.json(
+      { status: "FAILED", errorCode: "INVALID_AUDIO_PATH", message: "audioPath must reference a valid file inside storage/ or public/" },
+      { status: 400 }
+    );
+  }
+  const voice = validateVoiceId(body.voice, "bn");
   const requestedDuration = Math.max(50, Math.min(3600, body.duration || 50));
   const visualStyle = body.visualStyle || "illustration";
+  const fontFile = resolveVideoFontFile();
 
   const jobId = `cine_${Date.now()}`;
   const jobDir = path.join(VIDEO_DIR, jobId);
@@ -103,9 +104,9 @@ export async function POST(req: Request) {
     if (audioUpload) {
       try {
         inputAudioInfo = {
-          path: audioUpload,
-          duration: probeDuration(audioUpload),
-          format: exec("ffprobe", ["-v", "quiet", "-show_entries", "format=format_name", "-of", "csv=p=0", audioUpload]),
+          path: path.relative(process.cwd(), audioUpload),
+          duration: await probeDuration(audioUpload),
+          format: await execAsync("ffprobe", ["-v", "quiet", "-show_entries", "format=format_name", "-of", "csv=p=0", audioUpload]),
         };
       } catch {}
     }
@@ -164,9 +165,9 @@ export async function POST(req: Request) {
     while (totalDuration < requestedDuration && lineIdx < 500) {
       const text = allLines[lineIdx % allLines.length];
       const partPath = path.join(jobDir, `part${lineIdx}.wav`);
-      const escapedText = text.replace(/"/g, '\\"').replace(/`/g, "\\`").replace(/\$/g, "\\$");
-      exec("espeak", [escapedText, "-v", voice, "-s", "140", "-w", partPath]);
-      const partDur = probeDuration(partPath);
+      const cleanText = text.replace(/[\r\n\x00-\x1f\x7f]+/g, " ").trim();
+      await execAsync("espeak", ["-v", voice, "-s", "140", "-w", partPath, "--", cleanText]);
+      const partDur = await probeDuration(partPath);
       segments.push({ text, start: totalDuration, end: totalDuration + partDur });
       audioParts.push(partPath);
       totalDuration += partDur;
@@ -175,12 +176,12 @@ export async function POST(req: Request) {
 
     // Concatenate audio
     const concatListPath = path.join(jobDir, "concat.txt");
-    fsSync.writeFileSync(concatListPath, audioParts.map((p) => `file '${p}'`).join("\n"), "utf-8");
-    exec("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatListPath, "-c", "copy", audioPath]);
+    fsSync.writeFileSync(concatListPath, audioParts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n"), "utf-8");
+    await execAsync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatListPath, "-c", "copy", audioPath]);
     for (const part of audioParts) { try { fsSync.unlinkSync(part); } catch {} }
     try { fsSync.unlinkSync(concatListPath); } catch {}
 
-    const audioDuration = probeDuration(audioPath);
+    const audioDuration = await probeDuration(audioPath);
 
     // Build scene storyboard
     const shotTypes = ["wide", "medium", "close-up", "over-shoulder", "top-down"];
@@ -215,19 +216,23 @@ export async function POST(req: Request) {
     generateSrtFile(segments, srtPath);
 
     // Build video with text overlay + burned subtitles
-    const drawTexts = segments.map((seg, i) => {
-      const escapedText = seg.text.slice(0, 80).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/%/g, "\\%");
-      return `drawtext=fontfile=${FONT_FILE}:text='${escapedText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h/2-40:enable='between(t,${seg.start.toFixed(2)},${seg.end.toFixed(2)})'`;
+    const drawTexts = segments.map((seg) => {
+      const escapedText = escapeDrawtext(seg.text, 80);
+      return `drawtext=fontfile=${fontFile}:text='${escapedText}':fontcolor=white:fontsize=42:x=(w-text_w)/2:y=h/2-40:enable='between(t,${seg.start.toFixed(2)},${seg.end.toFixed(2)})'`;
     });
 
-    const subtitleFilter = `subtitles='${srtPath.replace(/'/g, "\\'")}'`;
+    const subtitleFilter = `subtitles='${srtPath.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
     const videoFilter = `${drawTexts.join(",")},${subtitleFilter}`;
 
     const finalVideoPath = path.join(jobDir, `${jobId}.mp4`);
-    exec("ffmpeg", ["-y", "-f", "lavfi", "-i", `color=c=0x1a1a2e:s=1920x1080:d=${audioDuration.toFixed(2)}:r=30`, "-i", audioPath, "-vf", videoFilter, "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", finalVideoPath]);
+    await execAsync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", `color=c=0x1a1a2e:s=1920x1080:d=${audioDuration.toFixed(2)}:r=30`, "-i", audioPath, "-vf", videoFilter, "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", finalVideoPath],
+      600_000
+    );
 
     // Validate
-    const metadata = probeVideo(finalVideoPath);
+    const metadata = await probeVideo(finalVideoPath);
     const actualDuration = metadata.duration;
     const durationMet = actualDuration >= requestedDuration;
 

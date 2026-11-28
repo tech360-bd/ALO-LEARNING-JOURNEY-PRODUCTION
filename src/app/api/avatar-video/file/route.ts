@@ -1,54 +1,99 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { db } from '@/lib/db';
-import { requireOwner } from '@/lib/auth';
+import { requireOwnerOrResponse } from '@/lib/auth';
 import { resolvePublicPath } from '@/lib/cleanup';
-import fs from 'fs';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/avatar-video/file?id=<videoId>
- * Authenticated, owner-scoped media download. Streams the MP4 file.
- * Replaces the previous public guessable URL pattern.
+ * Authenticated, owner-scoped media download. Streams the MP4 file with validated HTTP Range support.
  */
-
 export async function GET(req: NextRequest) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
+
+  const url = new URL(req.url);
+  const id = url.searchParams.get('id');
+  if (!id || !/^[a-zA-Z0-9_-]{10,40}$/.test(id)) {
+    return NextResponse.json({ error: 'Invalid id' }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
+  }
+
   try {
-    const owner = await requireOwner();
-    const url = new URL(req.url);
-    const id = url.searchParams.get('id');
-    if (!id || !/^[a-zA-Z0-9]{10,40}$/.test(id)) {
-      return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-    }
-    const video = await db.avatarVideo.findFirst({ where: { id, ownerId: owner.ownerId } });
+    const video = await db.avatarVideo.findFirst({
+      where: { id, ownerId: auth.owner.ownerId },
+    });
     if (!video || !video.videoUrl) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      return NextResponse.json({ error: 'Not found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
     }
-    // resolve the actual file path (strip token query)
+
     const urlPath = video.videoUrl.split('?')[0];
     const filePath = resolvePublicPath(urlPath);
-    if (!filePath || !fs.existsSync(filePath)) {
-      return NextResponse.json({ error: 'File missing on disk' }, { status: 410 });
+    if (!filePath) {
+      return NextResponse.json({ error: 'File missing on disk' }, { status: 410, headers: { 'Cache-Control': 'no-store' } });
     }
-    const stat = fs.statSync(filePath);
-    const range = req.headers.get('range');
-    const headers: Record<string, string> = {
+
+    let fileStat;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      return NextResponse.json({ error: 'File missing on disk' }, { status: 410, headers: { 'Cache-Control': 'no-store' } });
+    }
+    if (!fileStat.isFile()) {
+      return NextResponse.json({ error: 'File missing on disk' }, { status: 410, headers: { 'Cache-Control': 'no-store' } });
+    }
+
+    const baseHeaders: Record<string, string> = {
       'Content-Type': 'video/mp4',
-      'Content-Length': String(stat.size),
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'private, max-age=3600',
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': `inline; filename="avatar_video_${id}.mp4"`,
     };
+
+    const range = req.headers.get('range');
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-      const chunkSize = end - start + 1;
-      const stream = fs.createReadStream(filePath, { start, end });
-      headers['Content-Range'] = `bytes ${start}-${end}/${stat.size}`;
-      headers['Content-Length'] = String(chunkSize);
-      return new NextResponse(stream as any, { status: 206, headers });
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      if (!match || (!match[1] && !match[2])) {
+        return new Response(null, {
+          status: 416,
+          headers: { ...baseHeaders, 'Content-Range': `bytes */${fileStat.size}` },
+        });
+      }
+      const start = match[1] ? Number(match[1]) : Math.max(0, fileStat.size - Number(match[2]));
+      const rawEnd = match[2] && match[1] ? Number(match[2]) : fileStat.size - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(rawEnd) || start < 0 || rawEnd < start || start >= fileStat.size) {
+        return new Response(null, {
+          status: 416,
+          headers: { ...baseHeaders, 'Content-Range': `bytes */${fileStat.size}` },
+        });
+      }
+      const end = Math.min(rawEnd, fileStat.size - 1);
+      const stream = createReadStream(filePath, { start, end });
+      return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
+        status: 206,
+        headers: {
+          ...baseHeaders,
+          'Content-Length': String(end - start + 1),
+          'Content-Range': `bytes ${start}-${end}/${fileStat.size}`,
+        },
+      });
     }
-    const stream = fs.createReadStream(filePath);
-    return new NextResponse(stream as any, { status: 200, headers });
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const stream = createReadStream(filePath);
+    return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
+      status: 200,
+      headers: {
+        ...baseHeaders,
+        'Content-Length': String(fileStat.size),
+      },
+    });
+  } catch (err) {
+    console.error('[avatar-video/file] Failed to stream video:', err instanceof Error ? err.message : String(err));
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
   }
 }
