@@ -2,15 +2,16 @@
 
 Generated from the root App Router with `node scripts/route-inventory.mjs`. These are declarations, not live endpoint checks. Implicit framework methods are not counted.
 
-## Pages (5)
+## Pages (6)
 
 - `/`
 - `/contact`
 - `/dashboard`
 - `/login`
 - `/marketingos`
+- `/super-admin`
 
-## API routes (316)
+## API routes (336)
 
 | Path | Explicit HTTP exports |
 | --- | --- |
@@ -122,6 +123,7 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/fees/[id]` | GET, PATCH, DELETE |
 | `/api/growth` | GET, POST |
 | `/api/health` | GET |
+| `/api/health/diagnose` | GET |
 | `/api/human-avatars` | GET, POST, DELETE |
 | `/api/ideas` | GET, POST, DELETE |
 | `/api/image-studio` | GET, POST |
@@ -200,10 +202,25 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/students/[id]` | GET, PATCH, DELETE |
 | `/api/subjects` | GET, POST |
 | `/api/subjects/[id]` | GET, PATCH, DELETE |
+| `/api/super-admin/actions` | GET, POST |
+| `/api/super-admin/chat` | GET, POST |
+| `/api/super-admin/config` | GET, HEAD, POST |
+| `/api/super-admin/conversations` | GET, POST, DELETE |
+| `/api/super-admin/health` | GET |
+| `/api/super-admin/knowledge` | GET |
+| `/api/super-admin/monid` | GET, POST |
+| `/api/super-admin/providers` | GET, POST |
+| `/api/super-admin/providers/probe` | POST |
+| `/api/super-admin/runs` | GET, POST |
+| `/api/super-admin/runs/[id]` | GET |
+| `/api/super-admin/runs/[id]/cancel` | POST |
+| `/api/super-admin/runs/[id]/events` | GET |
+| `/api/super-admin/self-heal` | GET, POST |
 | `/api/team` | GET, POST |
 | `/api/telegram` | GET, POST |
 | `/api/tools` | GET, POST |
 | `/api/tools/[id]` | GET, PATCH, DELETE |
+| `/api/tools/web-search` | GET, POST |
 | `/api/users` | GET, POST |
 | `/api/users/[id]` | GET, PATCH, DELETE |
 | `/api/v1/admin/ai-models/after-hours` | GET, PUT |
@@ -273,6 +290,8 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/v1/knowledge-bases/[id]/documents` | POST |
 | `/api/v1/knowledge-bases/[id]/documents/[docId]/reindex` | POST |
 | `/api/v1/knowledge-bases/[id]/search` | POST |
+| `/api/v1/omni/chat` | POST |
+| `/api/v1/omni/providers` | GET |
 | `/api/v1/outbound-campaigns` | GET, POST |
 | `/api/v1/outbound-campaigns/[id]` | GET, PATCH, DELETE |
 | `/api/v1/outbound-campaigns/[id]/launch` | POST |
@@ -289,6 +308,7 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/v1/shared-inbox/[id]` | PATCH |
 | `/api/v1/social/posts` | GET |
 | `/api/v1/social/publish` | POST |
+| `/api/v1/super-admin/health` | GET |
 | `/api/v1/supervisor/agents` | GET |
 | `/api/v1/supervisor/barge-in/[callId]` | POST |
 | `/api/v1/supervisor/listen/[callId]` | POST |
@@ -308,6 +328,7 @@ Generated from the root App Router with `node scripts/route-inventory.mjs`. Thes
 | `/api/video/cinematic` | POST |
 | `/api/video/from-photo` | GET, POST |
 | `/api/video/generate` | POST |
+| `/api/video/long` | GET, POST |
 | `/api/video/storyboard` | POST |
 | `/api/voice-studio` | GET, POST |
 | `/api/voice/generate` | POST |
