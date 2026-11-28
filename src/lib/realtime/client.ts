@@ -1,10 +1,10 @@
 /**
- * Realtime client stub for WebSocket/SSE connections.
+ * Realtime client for WebSocket/SSE connections.
  * Used by workforce chat, voice agents, and live dashboards.
  */
 
 /** Listener invoked with the decoded payload of a server event. */
-export type RealtimeListener = (data: unknown) => void;
+export type RealtimeListener<T = unknown> = (data: T) => void;
 
 export interface RealtimeClientOptions {
   url?: string;
@@ -17,7 +17,12 @@ export class RealtimeClient {
   private token: string;
   private reconnect: boolean;
   private ws: WebSocket | null = null;
-  private listeners: Map<string, Set<RealtimeListener>> = new Map();
+  private listeners: Map<string, Set<RealtimeListener<unknown>>> = new Map();
+  private connectListeners: Set<() => void> = new Set();
+  private disconnectListeners: Set<() => void> = new Set();
+  public isConnected = false;
+  public isConnecting = false;
+  public socketId: string | null = null;
 
   constructor(options: RealtimeClientOptions = {}) {
     this.url = options.url || process.env.NEXT_PUBLIC_APP_URL || "https://learn.alolabs.net";
@@ -27,9 +32,16 @@ export class RealtimeClient {
 
   connect(): void {
     if (typeof WebSocket === "undefined") return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this.isConnecting = true;
     try {
       const wsUrl = this.url.replace(/^http/, "ws") + "/ws";
       this.ws = new WebSocket(wsUrl);
+      this.ws.onopen = () => {
+        this.isConnected = true;
+        this.isConnecting = false;
+        for (const cb of this.connectListeners) cb();
+      };
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -37,24 +49,43 @@ export class RealtimeClient {
         } catch { /* ignore non-JSON */ }
       };
       this.ws.onclose = () => {
+        this.isConnected = false;
+        this.isConnecting = false;
+        for (const cb of this.disconnectListeners) cb();
         if (this.reconnect) setTimeout(() => this.connect(), 5000);
       };
-    } catch { /* server-side no-op */ }
+    } catch {
+      this.isConnecting = false;
+    }
   }
 
   disconnect(): void {
     this.reconnect = false;
+    this.isConnected = false;
+    this.isConnecting = false;
     this.ws?.close();
     this.ws = null;
   }
 
-  on(event: string, callback: RealtimeListener): void {
-    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
-    this.listeners.get(event)!.add(callback);
+  onConnect(callback: () => void): () => void {
+    this.connectListeners.add(callback);
+    return () => { this.connectListeners.delete(callback); };
   }
 
-  off(event: string, callback: RealtimeListener): void {
-    this.listeners.get(event)?.delete(callback);
+  onDisconnect(callback: () => void): () => void {
+    this.disconnectListeners.add(callback);
+    return () => { this.disconnectListeners.delete(callback); };
+  }
+
+  on<T = unknown>(event: string, callback: RealtimeListener<T>): () => void {
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    const wrapped = callback as RealtimeListener<unknown>;
+    this.listeners.get(event)!.add(wrapped);
+    return () => this.off(event, wrapped);
+  }
+
+  off<T = unknown>(event: string, callback: RealtimeListener<T>): void {
+    this.listeners.get(event)?.delete(callback as RealtimeListener<unknown>);
   }
 
   private emit(event: string, data: unknown): void {
@@ -68,6 +99,19 @@ export class RealtimeClient {
       this.ws.send(JSON.stringify(data));
     }
   }
+}
+
+let singletonClient: RealtimeClient | null = null;
+
+export function getRealtimeClientInstance(): RealtimeClient | null {
+  if (typeof window === "undefined") return null;
+  if (!singletonClient) {
+    singletonClient = new RealtimeClient({
+      url: window.location.origin,
+      reconnect: false,
+    });
+  }
+  return singletonClient;
 }
 
 export function createRealtimeClient(options?: RealtimeClientOptions): RealtimeClient {

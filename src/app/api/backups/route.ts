@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { MODEL_NAMES } from "@/lib/local-db-fallback";
 import { ensureSeeded } from "@/lib/seed";
 import { getBackupStorageDir } from "@/lib/storage-paths";
@@ -141,6 +142,8 @@ function safeBackupId(id: unknown): string | null {
 }
 
 export async function GET() {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const backups = await listBackups();
   const totalSize = backups.reduce((s, b) => s + b.sizeBytes, 0);
@@ -161,6 +164,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   await ensureBackupDir();
   const parsedBody = await req.json().catch(() => null) as unknown;

@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState } from "react";
@@ -204,7 +203,7 @@ export default function AssignmentsView() {
 
   // Mutations
   const createMutation = useApiMutation<
-    { title: string; description: string; subjectId: string; dueDate: string; totalMarks: number; status: string },
+    { title: string; description?: string; subjectId: string; dueDate?: string; totalMarks: number; status: string },
     AssignmentRecord
   >({
     method: "POST",
@@ -219,7 +218,7 @@ export default function AssignmentsView() {
   });
 
   const submitMutation = useApiMutation<
-    { content: string; fileName: string; fileUrl: string },
+    { content: string; fileName?: string; fileUrl?: string },
     SubmissionRecord
   >({
     method: "POST",

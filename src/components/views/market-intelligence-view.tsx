@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState, useCallback } from "react";
@@ -149,7 +148,7 @@ export default function MarketIntelligenceView() {
     );
   }
 
-  const intel = data?.data || data as any;
+  const intel = (data as unknown as { data?: typeof data } | null)?.data || data;
   const summary = intel?.summary || {
     totalCompetitors: 0, highThreatCompetitors: 0, mediumThreatCompetitors: 0, lowThreatCompetitors: 0,
     totalKeywords: 0, totalSearchVolume: 0, avgDifficulty: 0,

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { promises as fs } from "fs";
 import path from "path";
@@ -96,6 +97,8 @@ async function ensureUploadDir(profileId: string) {
 }
 
 export async function GET(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const { searchParams } = new URL(req.url);
   const profileId = searchParams.get("profileId");
@@ -118,6 +121,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const contentType = req.headers.get("content-type") ?? "";
 

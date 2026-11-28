@@ -119,3 +119,7 @@ __pycache__/
 # Runtime config written from the Super Admin dashboard (encrypted secrets).
 .alo-runtime-config.json
 .alo-runtime-config.json.*.tmp
+
+# Playwright E2E artifacts
+/playwright-report/
+/test-results/

@@ -34,6 +34,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
 import {
@@ -124,6 +132,20 @@ interface SupervisorResponse {
   queues: SupervisorQueue[];
 }
 
+interface ActiveCallDetail {
+  id: string;
+  direction: string;
+  fromNumber: string;
+  toNumber: string;
+  fromName?: string | null;
+  toName?: string | null;
+  status: string;
+  startedAt: string;
+  durationSec?: number;
+  summary?: string | null;
+  events?: Array<{ id: string; eventType: string; timestamp: string }>;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 const STATUS_OPTIONS: { value: AgentStatus; label: string; icon: React.ReactNode; tone: string }[] = [
@@ -173,6 +195,10 @@ function MyWorkspace() {
   const [callNotes, setCallNotes] = useState('');
   const [muted, setMuted] = useState(false);
   const [queuedDialing, setQueuedDialing] = useState(false);
+  const [callControlBusy, setCallControlBusy] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferDest, setTransferDest] = useState('');
+  const [transferReason, setTransferReason] = useState('');
 
   const { data: statusData, isLoading, error, refetch } = useApiQuery<AgentStatusResponse>(
     '/api/v1/agent-status',
@@ -183,11 +209,23 @@ function MyWorkspace() {
     return statusData.agentStatuses.find((s) => s.userId === user.id) || null;
   }, [statusData, user]);
 
+  const activeCallPath = myStatus?.currentCallId
+    ? `/api/v1/calls/${myStatus.currentCallId}`
+    : '';
+  const {
+    data: activeCallData,
+    refetch: refetchActiveCall,
+  } = useApiQuery<ActiveCallDetail>(activeCallPath, {
+    enabled: Boolean(myStatus?.currentCallId),
+  });
+
+  const { data: ringingCallsData, refetch: refetchRinging } = useApiQuery<{ calls?: ActiveCallDetail[] }>(
+    '/api/v1/calls?status=ringing&limit=10',
+  );
+
   const queuedCalls = useMemo(() => {
-    // For demo — show simulated queued calls alongside real agent statuses.
-    // Real queue list endpoint would be /api/v1/call-queues/[id]/waiting
-    return statusData?.agentStatuses.filter((s) => s.status === 'busy').slice(0, 5) || [];
-  }, [statusData]);
+    return ringingCallsData?.calls || [];
+  }, [ringingCallsData]);
 
   const updateStatus = useApiMutation<Partial<{ status: AgentStatus }>, { status: AgentStatus }>({
     method: 'POST',
@@ -217,17 +255,138 @@ function MyWorkspace() {
       });
       toast.success('Outbound call placed');
       setDialString('');
+      refetch();
+      refetchRinging();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Originate failed');
     } finally {
       setQueuedDialing(false);
     }
-  }, [dialString, user]);
+  }, [dialString, user, refetch, refetchRinging]);
 
-  // Mocked "current call" — in production this would come from a websocket subscription
-  const currentCall = myStatus?.currentCallId
-    ? { id: myStatus.currentCallId, from: '+8801XXXXXXXXX', name: 'Incoming caller', startedAt: myStatus.statusChangedAt }
-    : null;
+  const currentCall = useMemo(() => {
+    if (!myStatus?.currentCallId) return null;
+    if (activeCallData) {
+      const counterparty =
+        activeCallData.direction === 'outbound'
+          ? activeCallData.toNumber
+          : activeCallData.fromNumber;
+      const name =
+        (activeCallData.direction === 'outbound'
+          ? activeCallData.toName
+          : activeCallData.fromName) || counterparty;
+      return {
+        id: activeCallData.id,
+        from: counterparty,
+        name,
+        status: activeCallData.status,
+        direction: activeCallData.direction,
+        startedAt: activeCallData.startedAt,
+        events: activeCallData.events || [],
+      };
+    }
+    return {
+      id: myStatus.currentCallId,
+      from: myStatus.currentCallId,
+      name: 'Active call',
+      status: 'active',
+      direction: 'inbound',
+      startedAt: myStatus.statusChangedAt,
+      events: [],
+    };
+  }, [myStatus, activeCallData]);
+
+  const handleHoldToggle = useCallback(async () => {
+    if (!currentCall) return;
+    setCallControlBusy(true);
+    try {
+      if (currentCall.status === 'hold') {
+        await api.post(`/api/v1/calls/${currentCall.id}/resume`, {});
+        toast.success('Call resumed');
+      } else {
+        await api.post(`/api/v1/calls/${currentCall.id}/hold`, {});
+        toast.success('Call placed on hold');
+      }
+      refetchActiveCall();
+      refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Hold action failed');
+    } finally {
+      setCallControlBusy(false);
+    }
+  }, [currentCall, refetchActiveCall, refetch]);
+
+  const handleHangup = useCallback(async () => {
+    if (!currentCall) return;
+    setCallControlBusy(true);
+    try {
+      await api.post(`/api/v1/calls/${currentCall.id}/hangup`, {});
+      toast.success('Call ended');
+      refetch();
+      refetchRinging();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Hangup failed');
+    } finally {
+      setCallControlBusy(false);
+    }
+  }, [currentCall, refetch, refetchRinging]);
+
+  const handleTransferSubmit = useCallback(async () => {
+    if (!currentCall) return;
+    if (!transferDest.trim() || !transferReason.trim()) {
+      toast.error('Destination and reason are required');
+      return;
+    }
+    setCallControlBusy(true);
+    try {
+      await api.post(`/api/v1/calls/${currentCall.id}/transfer`, {
+        destination: transferDest.trim(),
+        reason: transferReason.trim(),
+      });
+      toast.success('Call transferred');
+      setTransferOpen(false);
+      setTransferDest('');
+      setTransferReason('');
+      refetch();
+      refetchActiveCall();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Transfer failed');
+    } finally {
+      setCallControlBusy(false);
+    }
+  }, [currentCall, transferDest, transferReason, refetch, refetchActiveCall]);
+
+  const handleSaveNotes = useCallback(async () => {
+    if (!currentCall) return;
+    if (!callNotes.trim()) {
+      toast.error('Enter call notes before saving');
+      return;
+    }
+    setCallControlBusy(true);
+    try {
+      await api.patch(`/api/v1/calls/${currentCall.id}`, { notes: callNotes.trim() });
+      toast.success('Call notes saved');
+      refetchActiveCall();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save call notes');
+    } finally {
+      setCallControlBusy(false);
+    }
+  }, [currentCall, callNotes, refetchActiveCall]);
+
+  const handlePickUp = useCallback(async (callId: string) => {
+    setCallControlBusy(true);
+    try {
+      await api.post(`/api/v1/calls/${callId}/answer`, {});
+      toast.success('Call answered');
+      refetch();
+      refetchRinging();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to answer call');
+    } finally {
+      setCallControlBusy(false);
+    }
+  }, [refetch, refetchRinging]);
 
   return (
     <div className="space-y-4">
@@ -295,15 +454,21 @@ function MyWorkspace() {
                     <p className="font-medium text-sm">{currentCall.name}</p>
                     <p className="text-xs text-muted-foreground font-mono">{currentCall.from}</p>
                   </div>
-                  <Badge className="bg-emerald-500/15 text-emerald-600 border-emerald-500/30">
-                    Active
+                  <Badge className="bg-emerald-500/15 text-emerald-600 border-emerald-500/30 capitalize">
+                    {currentCall.status}
                   </Badge>
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <Button size="sm" variant="outline" className="flex flex-col items-center gap-0.5 h-16">
-                    <Pause className="h-4 w-4" />
-                    <span className="text-[10px]">Hold</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={callControlBusy}
+                    onClick={handleHoldToggle}
+                    className={`flex flex-col items-center gap-0.5 h-16 ${currentCall.status === 'hold' ? 'bg-amber-500/10 border-amber-500/30 text-amber-600' : ''}`}
+                  >
+                    {currentCall.status === 'hold' ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                    <span className="text-[10px]">{currentCall.status === 'hold' ? 'Resume' : 'Hold'}</span>
                   </Button>
                   <Button
                     size="sm"
@@ -317,13 +482,21 @@ function MyWorkspace() {
                     {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                     <span className="text-[10px]">{muted ? 'Unmute' : 'Mute'}</span>
                   </Button>
-                  <Button size="sm" variant="outline" className="flex flex-col items-center gap-0.5 h-16">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={callControlBusy}
+                    onClick={() => setTransferOpen(true)}
+                    className="flex flex-col items-center gap-0.5 h-16"
+                  >
                     <Forward className="h-4 w-4" />
                     <span className="text-[10px]">Transfer</span>
                   </Button>
                   <Button
                     size="sm"
                     variant="destructive"
+                    disabled={callControlBusy}
+                    onClick={handleHangup}
                     className="flex flex-col items-center gap-0.5 h-16"
                   >
                     <PhoneOff className="h-4 w-4" />
@@ -332,13 +505,24 @@ function MyWorkspace() {
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label htmlFor="call-notes">Call Notes</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="call-notes">Call Notes</Label>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={callControlBusy || !callNotes.trim()}
+                      onClick={handleSaveNotes}
+                      className="h-7 text-xs"
+                    >
+                      Save Notes
+                    </Button>
+                  </div>
                   <Textarea
                     id="call-notes"
                     rows={3}
                     value={callNotes}
                     onChange={(e) => setCallNotes(e.target.value)}
-                    placeholder="Type notes during the call (auto-saved to CRM)…"
+                    placeholder="Type notes during the call and click Save Notes…"
                   />
                 </div>
               </div>
@@ -401,37 +585,42 @@ function MyWorkspace() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <History className="h-4 w-4 text-blue-500" /> Customer 360
+              <History className="h-4 w-4 text-blue-500" /> Call Timeline
             </CardTitle>
           </CardHeader>
           <CardContent>
             {currentCall ? (
               <div className="space-y-3 text-sm">
                 <div className="rounded-md border p-2.5">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Customer</p>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Counterparty</p>
                   <p className="font-medium">{currentCall.name}</p>
                   <p className="text-xs text-muted-foreground font-mono">{currentCall.from}</p>
+                  <p className="text-[11px] text-muted-foreground mt-1 capitalize">
+                    Direction: {currentCall.direction} · Status: {currentCall.status}
+                  </p>
                 </div>
                 <div className="space-y-1.5">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Recent Activity</p>
-                  {[
-                    { label: 'Last call', value: '2 days ago', icon: <PhoneCall className="h-3 w-3" /> },
-                    { label: 'Open ticket', value: 'Support #1234', icon: <MessageCircle className="h-3 w-3" /> },
-                    { label: 'Lifetime value', value: '$1,240', icon: <Volume2 className="h-3 w-3" /> },
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs">
-                      <span className="flex items-center gap-1.5 text-muted-foreground">
-                        {item.icon} {item.label}
-                      </span>
-                      <span className="font-medium">{item.value}</span>
-                    </div>
-                  ))}
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Call Events</p>
+                  {currentCall.events.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No recorded call events yet.</p>
+                  ) : (
+                    currentCall.events.slice(-6).map((ev) => (
+                      <div key={ev.id} className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <PhoneCall className="h-3 w-3" /> {ev.eventType}
+                        </span>
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          {formatDistanceToNow(new Date(ev.timestamp), { addSuffix: true })}
+                        </span>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
                 <Users className="h-8 w-8 mb-2 text-muted-foreground/30" />
-                <p className="text-xs">Customer timeline appears when a call is active.</p>
+                <p className="text-xs">Call timeline appears when a call is active.</p>
               </div>
             )}
           </CardContent>
@@ -446,7 +635,7 @@ function MyWorkspace() {
             <Badge variant="secondary" className="text-[10px]">{queuedCalls.length}</Badge>
           </CardTitle>
           <CardDescription className="text-xs">
-            Calls waiting to be picked up.
+            Ringing calls waiting to be picked up.
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
@@ -469,24 +658,29 @@ function MyWorkspace() {
                 <TableRow>
                   <TableHead>Caller</TableHead>
                   <TableHead>Waiting</TableHead>
-                  <TableHead>Queue</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {queuedCalls.map((q, i) => (
+                {queuedCalls.map((q) => (
                   <TableRow key={q.id}>
-                    <TableCell className="text-sm">Caller #{i + 1}</TableCell>
+                    <TableCell className="text-sm font-mono">{q.fromName || q.fromNumber}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {formatDistanceToNow(new Date(q.statusChangedAt), { addSuffix: false })}
+                      {formatDistanceToNow(new Date(q.startedAt), { addSuffix: false })}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline" className="bg-orange-500/10 text-orange-600 border-orange-500/20">
-                        Default
+                      <Badge variant="outline" className="bg-orange-500/10 text-orange-600 border-orange-500/20 capitalize">
+                        {q.status}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button size="sm" variant="outline">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={callControlBusy}
+                        onClick={() => handlePickUp(q.id)}
+                      >
                         <PhoneCall className="h-3 w-3 mr-1" /> Pick Up
                       </Button>
                     </TableCell>
@@ -497,6 +691,50 @@ function MyWorkspace() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transfer Active Call</DialogTitle>
+            <DialogDescription>
+              Specify the destination extension/number and reason for transfer.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="transfer-dest">Destination</Label>
+              <Input
+                id="transfer-dest"
+                value={transferDest}
+                onChange={(e) => setTransferDest(e.target.value)}
+                placeholder="e.g. +8801... or queue:support"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="transfer-reason">Reason</Label>
+              <Input
+                id="transfer-reason"
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                placeholder="e.g. Escalating to billing specialist"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTransferOpen(false)} disabled={callControlBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleTransferSubmit}
+              disabled={callControlBusy}
+              className="bg-orange-500 hover:bg-orange-600 text-white"
+            >
+              {callControlBusy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+              Transfer Call
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

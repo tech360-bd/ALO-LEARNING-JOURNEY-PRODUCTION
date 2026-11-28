@@ -1,36 +1,27 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { executeAsAgent } from "@/lib/agent-runtime";
-import { spawnSync } from "child_process";
+import {
+  escapeDrawtext,
+  execAsync,
+  resolveVideoFontFile,
+  validateVoiceId,
+} from "@/lib/video-exec";
 import { promises as fs } from "fs";
 import fsSync from "fs";
 import path from "path";
 
 const VIDEO_DIR = path.join(process.cwd(), "storage", "videos");
-const FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
-function exec(bin: string, args: string[], timeoutMs = 300000): string {
-  try {
-    const result = spawnSync(bin, args, { timeout: timeoutMs, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    if (result.status !== 0) {
-      const stderr = (result.stderr || "").slice(0, 400);
-      throw new Error(`Command failed: ${bin} ${args.slice(0, 5).join(" ")}...\n${stderr}`);
-    }
-    return (result.stdout || "").trim();
-  } catch (e: any) {
-    if (e.message && e.message.startsWith("Command failed:")) throw e;
-    throw new Error(`Command failed: ${bin} ${args.slice(0, 5).join(" ")}...\n${(e.stderr || e.message || "").slice(0, 400)}`);
-  }
-}
-
-function probeDuration(filePath: string): number {
-  const out = exec("ffprobe", ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath]);
+async function probeDuration(filePath: string): Promise<number> {
+  const out = await execAsync("ffprobe", ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath]);
   return parseFloat(out);
 }
 
-function probeVideo(filePath: string) {
-  const json = exec("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath]);
+async function probeVideo(filePath: string) {
+  const json = await execAsync("ffprobe", ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath]);
   const data = JSON.parse(json);
   const v = data.streams.find((s: any) => s.codec_type === "video");
   const a = data.streams.find((s: any) => s.codec_type === "audio");
@@ -51,13 +42,13 @@ function probeVideo(filePath: string) {
 
 // Generate TTS audio and measure actual duration. If short, generate
 // additional meaningful content until audio >= targetDuration.
-function generateTTSToTarget(
+async function generateTTSToTarget(
   scriptLines: string[],
   voice: string,
   targetDuration: number,
   audioPath: string,
   jobId: string
-): { duration: number; segments: { text: string; start: number; end: number }[] } {
+): Promise<{ duration: number; segments: { text: string; start: number; end: number }[] }> {
   const audioParts: string[] = [];
   const segments: { text: string; start: number; end: number }[] = [];
   let totalDuration = 0;
@@ -112,10 +103,10 @@ function generateTTSToTarget(
     }
 
     const partPath = path.join(VIDEO_DIR, `${jobId}_part${lineIdx}.wav`);
-    const escapedText = text.replace(/"/g, '\\"').replace(/`/g, "\\`").replace(/\$/g, "\\$");
-    exec("espeak", [escapedText, "-v", voice, "-s", "140", "-w", partPath]);
+    const cleanText = text.replace(/[\r\n\x00-\x1f\x7f]+/g, " ").trim();
+    await execAsync("espeak", ["-v", voice, "-s", "140", "-w", partPath, "--", cleanText]);
 
-    const partDur = probeDuration(partPath);
+    const partDur = await probeDuration(partPath);
     segments.push({ text, start: totalDuration, end: totalDuration + partDur });
     audioParts.push(partPath);
     totalDuration += partDur;
@@ -124,9 +115,9 @@ function generateTTSToTarget(
 
   // Concatenate all audio parts
   const concatListPath = path.join(VIDEO_DIR, `${jobId}_concat.txt`);
-  const concatContent = audioParts.map((p) => `file '${p}'`).join("\n");
+  const concatContent = audioParts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n");
   fsSync.writeFileSync(concatListPath, concatContent);
-  exec("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatListPath, "-c", "copy", audioPath]);
+  await execAsync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatListPath, "-c", "copy", audioPath]);
 
   // Clean up parts
   for (const part of audioParts) {
@@ -134,18 +125,21 @@ function generateTTSToTarget(
   }
   try { fsSync.unlinkSync(concatListPath); } catch {}
 
-  const finalDuration = probeDuration(audioPath);
+  const finalDuration = await probeDuration(audioPath);
   return { duration: finalDuration, segments };
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const body = await req.json().catch(() => ({}));
 
   const topic = body.topic || "Untitled";
   const script = body.script || `[হুক] ${topic} নিয়ে আজ জানবো\n\n[বিষয়] এই ভিডিওতে আমরা শিখব ${topic} সম্পর্কে\n\n[CTA] আলো লার্নিং জার্নি-তে যুক্ত হোন`;
-  const voice = body.voice || "bn";
+  const voice = validateVoiceId(body.voice, "bn");
   const requestedDuration = Math.max(50, Math.min(3600, body.duration || 50));
+  const fontFile = resolveVideoFontFile();
 
   const jobId = `video_${Date.now()}`;
   const audioPath = path.join(VIDEO_DIR, `${jobId}_audio.wav`);
@@ -169,29 +163,30 @@ export async function POST(req: Request) {
     const scriptLines = script.split("\n").filter((l: string) => l.trim());
 
     // STEP 2: Generate TTS audio to meet requested duration
-    const { duration: audioDuration, segments } = generateTTSToTarget(
+    const { duration: audioDuration, segments } = await generateTTSToTarget(
       scriptLines, voice, requestedDuration, audioPath, jobId
     );
 
     // STEP 3: Build scene timeline from actual audio segments
-    const sceneColors = ["0xF59E0B", "0xEC4899", "0x10B981", "0x8B5CF6", "0x06B6D4"];
-    const drawTexts = segments.map((seg, i) => {
+    const drawTexts = segments.map((seg) => {
       const start = seg.start.toFixed(2);
       const end = seg.end.toFixed(2);
-      const escapedText = seg.text.slice(0, 80).replace(/'/g, "\\'").replace(/:/g, "\\:").replace(/%/g, "\\%");
-      const color = sceneColors[i % sceneColors.length];
-      // Background color change per scene + text overlay
-      return `drawtext=fontfile=${FONT_FILE}:text='${escapedText}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,${start},${end})'`;
+      const escapedText = escapeDrawtext(seg.text, 80);
+      return `drawtext=fontfile=${fontFile}:text='${escapedText}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,${start},${end})'`;
     });
 
     const videoFilter = `scale=1920:1080,${drawTexts.join(",")}`;
 
     // STEP 4: Generate video — background + audio + text overlay
     // Video duration = audio duration (ensures narration matches video)
-    exec("ffmpeg", ["-y", "-f", "lavfi", "-i", `color=c=0x1a1a2e:s=1920x1080:d=${audioDuration.toFixed(2)}:r=30`, "-i", audioPath, "-vf", videoFilter, "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", videoPath]);
+    await execAsync(
+      "ffmpeg",
+      ["-y", "-f", "lavfi", "-i", `color=c=0x1a1a2e:s=1920x1080:d=${audioDuration.toFixed(2)}:r=30`, "-i", audioPath, "-vf", videoFilter, "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", videoPath],
+      300_000
+    );
 
     // STEP 5: Validate the generated video with ffprobe
-    const metadata = probeVideo(videoPath);
+    const metadata = await probeVideo(videoPath);
 
     // Clean up audio
     try { await fs.unlink(audioPath); } catch {}
@@ -241,7 +236,6 @@ export async function POST(req: Request) {
       topic,
       video: {
         filePath: `/storage/videos/${jobId}.mp4`,
-        absolutePath: videoPath,
         duration: Math.round(actualDuration * 10) / 10,
         requestedDuration,
         actualDuration: Math.round(actualDuration * 10) / 10,

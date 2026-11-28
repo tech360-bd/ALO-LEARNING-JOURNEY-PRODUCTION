@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
@@ -15,7 +14,7 @@ export async function POST(req: NextRequest) {
     const avatar = await db.aiAgent.findFirst({ where: { id: body.avatarId, companyId: payload.companyId, type: 'avatar' } });
     if (!avatar) return NextResponse.json({ error: 'Avatar not found' }, { status: 404 });
     const config = JSON.parse(avatar.config || '{}');
-    let videoTaskId = null, videoStatus = 'pending';
+    let videoTaskId: string | null = null, videoStatus = 'pending';
     let videoError: string | null = null, audioError: string | null = null;
     try {
       const zai = await createApprovedZai();
@@ -29,7 +28,7 @@ export async function POST(req: NextRequest) {
       videoStatus = 'failed';
       videoError = error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200);
     }
-    let audioUrl = null;
+    let audioUrl: string | null = null;
     try {
       const zai = await createApprovedZai();
       const tts = await zai.audio.tts.create({ input: body.script, voice: config.voiceId || 'default' });

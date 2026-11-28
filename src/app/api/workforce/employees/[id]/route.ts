@@ -1,14 +1,14 @@
-// @ts-nocheck — temporary: see audit for fix plan
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { readBearerToken } from '@/lib/bearer-auth';
 import { getEmployeeById } from '@/lib/workforce/engine';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, context: RouteContext) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const payload = await verifyToken(token);
@@ -21,17 +21,12 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
     const { id } = await context.params;
 
-    // Try engine first, fallback to direct DB query
-    let employee = await getEmployeeById(id);
+    let employee = await getEmployeeById(id, companyId);
 
     if (!employee || employee.companyId !== companyId) {
-      employee = await getEmployeeById(id);
-    }
-
-    if (!employee || employee.companyId !== companyId) {
-      // Direct DB fallback
-      const direct = await db.employee.findUnique({
-        where: { id },
+      // Direct DB fallback strictly scoped by companyId
+      const direct = await db.employee.findFirst({
+        where: { id, companyId },
         include: {
           department: {
             select: {
@@ -47,7 +42,11 @@ export async function GET(req: NextRequest, context: RouteContext) {
       if (!direct || direct.companyId !== companyId) {
         return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
       }
-      employee = direct as typeof employee;
+      employee = direct as unknown as typeof employee;
+    }
+
+    if (!employee) {
+      return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }
 
     // Get recent task executions (last 10)
@@ -103,7 +102,7 @@ export async function GET(req: NextRequest, context: RouteContext) {
 
 export async function PATCH(req: NextRequest, context: RouteContext) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const payload = await verifyToken(token);

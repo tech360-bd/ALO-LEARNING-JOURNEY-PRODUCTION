@@ -35,6 +35,8 @@ export interface OmniChatRequest {
   task?: string;
   timeoutMs?: number;
   maxTokens?: number;
+  /** Set true only when the caller strictly requires JSON-formatted output. */
+  json?: boolean;
 }
 
 export interface OmniChatResult {
@@ -194,29 +196,36 @@ export async function setPreferredProvider(providerId: string | null): Promise<v
  * Order: local Ollama first → registry/env-var chain (chainChat).
  * Sequential only; never parallel. Throws when no real model answers.
  */
-export async function routeChat(req: OmniChatRequest): Promise<OmniChatResult> {
+export async function routeChat(
+  req: OmniChatRequest,
+  opts?: { skipLocal?: boolean }
+): Promise<OmniChatResult> {
   await primeExternalAiConfig();
   const start = Date.now();
   const tried: string[] = [];
 
   // 1) Local Ollama first (private, free, no data leaves the server).
-  tried.push("local-ollama");
-  try {
-    const local = await generateLocalChatJson(req.system, req.user, req.timeoutMs ?? 30_000);
-    if (!local.model.includes("(built-in-local)")) {
-      recordSuccess("local-ollama", Date.now() - start);
-      return {
-        content: local.content,
-        provider: "local-ollama",
-        model: local.model,
-        degraded: false,
-        latencyMs: Date.now() - start,
-        tried,
-      };
+  if (!opts?.skipLocal) {
+    tried.push("local-ollama");
+    try {
+      const local = await generateLocalChatJson(req.system, req.user, req.timeoutMs ?? 30_000);
+      if (!local.model.includes("(built-in-local)")) {
+        recordSuccess("local-ollama", Date.now() - start);
+        return {
+          content: local.content,
+          provider: "local-ollama",
+          model: local.model,
+          degraded: false,
+          latencyMs: Date.now() - start,
+          tried,
+        };
+      }
+      recordFailure("local-ollama", "local model unavailable (template fallback)");
+    } catch (err) {
+      recordFailure("local-ollama", err instanceof Error ? err.message : "local model error");
     }
-    recordFailure("local-ollama", "local model unavailable (template fallback)");
-  } catch (err) {
-    recordFailure("local-ollama", err instanceof Error ? err.message : "local model error");
+  } else {
+    tried.push("local-ollama");
   }
 
   // 2) External free providers — ONE at a time, sequential failover.
@@ -232,9 +241,12 @@ export async function routeChat(req: OmniChatRequest): Promise<OmniChatResult> {
       );
     }
 
-    // Preferred-provider hint for the env-var chain (model selection).
-    const preferred = await loadPreferredProvider();
-    const preferredModel = preferred ? `${preferred === "local-ollama" ? "ollama" : preferred}:` : undefined;
+    // Preferred-provider hint for the registry & env-var chain.
+    // Pass provider slug separately (never emit a trailing empty "provider:" model).
+    const rawPreferred = await loadPreferredProvider();
+    const preferred = rawPreferred && !isCoolingDown(rawPreferred) ? rawPreferred : null;
+    const normalizedProvider = preferred === "local-ollama" ? "ollama" : preferred ?? undefined;
+    const hasExplicitModel = Boolean(preferred && preferred.includes(":") && preferred.split(":")[1]?.trim());
 
     tried.push(...orderedProviders().map((p) => p.id));
     const chain = await chainChat(
@@ -242,7 +254,12 @@ export async function routeChat(req: OmniChatRequest): Promise<OmniChatResult> {
         { role: "system", content: req.system },
         { role: "user", content: req.user },
       ],
-      { maxTokens: req.maxTokens ?? 1200, temperature: 0.4, preferredModel },
+      {
+        maxTokens: req.maxTokens ?? 1200,
+        temperature: 0.4,
+        preferredProvider: normalizedProvider,
+        preferredModel: hasExplicitModel ? preferred! : undefined,
+      },
     );
 
     if (chain.fallback) {
@@ -288,9 +305,12 @@ export async function routeChatStream(
   onToken: (text: string) => void,
   signal?: AbortSignal
 ): Promise<OmniChatStreamResult> {
+  await primeExternalAiConfig();
   const start = Date.now();
   const tried: string[] = [];
   const timeoutMs = req.timeoutMs ?? 30_000;
+  const MAX_LINE_BUFFER = 256_000;
+  const MAX_STREAM_CHARS = 512_000;
 
   if (signal?.aborted) throw new Error("aborted");
 
@@ -300,21 +320,24 @@ export async function routeChatStream(
     const base = getPrivateLocalBaseUrl("OLLAMA_BASE_URL", "http://127.0.0.1:11434");
     const model = process.env.OLLAMA_MODEL?.trim() || "qwen2.5:7b";
     const url = new URL("/api/chat", base.toString());
+    const payload: Record<string, unknown> = {
+      model,
+      stream: true,
+      messages: [
+        { role: "system", content: req.system },
+        { role: "user", content: req.user },
+      ],
+      options: { temperature: 0.7, num_predict: req.maxTokens ?? 1200 },
+    };
+    if (req.json) payload.format = "json";
+
     const response = await fetch(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       cache: "no-store",
+      redirect: "error",
       signal: signal ?? AbortSignal.timeout(Math.max(1_000, Math.min(timeoutMs, 300_000))),
-      body: JSON.stringify({
-        model,
-        stream: true,
-        format: "json",
-        messages: [
-          { role: "system", content: req.system },
-          { role: "user", content: req.user },
-        ],
-        options: { temperature: 0.7, num_predict: req.maxTokens ?? 1200 },
-      }),
+      body: JSON.stringify(payload),
     });
     if (!response.ok || !response.body) {
       throw new Error(`Local Ollama returned HTTP ${response.status}`);
@@ -324,29 +347,39 @@ export async function routeChatStream(
     let buffer = "";
     let content = "";
     let done = false;
-    while (!done) {
-      const { value, done: readerDone } = await reader.read();
-      if (readerDone) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        let json: any;
-        try {
-          json = JSON.parse(line);
-        } catch {
-          continue;
+    try {
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        if (readerDone) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > MAX_LINE_BUFFER) {
+          throw new Error("Local Ollama stream line exceeded buffer limit");
         }
-        if (json.error) throw new Error(`Local Ollama error: ${String(json.error).slice(0, 180)}`);
-        const chunk = typeof json.message?.content === "string" ? json.message.content : "";
-        if (chunk) {
-          content += chunk;
-          onToken(chunk);
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          let json: any;
+          try {
+            json = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (json.error) throw new Error(`Local Ollama error: ${String(json.error).slice(0, 180)}`);
+          const chunk = typeof json.message?.content === "string" ? json.message.content : "";
+          if (chunk) {
+            if (content.length + chunk.length > MAX_STREAM_CHARS) {
+              throw new Error("Local Ollama stream exceeded maximum output length");
+            }
+            content += chunk;
+            onToken(chunk);
+          }
+          if (json.done) done = true;
         }
-        if (json.done) done = true;
       }
+    } finally {
+      await reader.cancel().catch(() => undefined);
     }
     if (!content.trim()) throw new Error("Local Ollama returned an empty stream");
     recordSuccess("local-ollama", Date.now() - start);
@@ -364,8 +397,8 @@ export async function routeChatStream(
     recordFailure("local-ollama", err instanceof Error ? err.message : "local stream error");
   }
 
-  // 2) External free providers — non-streaming chain, chunked delivery.
-  const plain = await routeChat(req);
+  // 2) External free providers — non-streaming chain, chunked delivery (skip local Ollama retry).
+  const plain = await routeChat(req, { skipLocal: true });
   // Word-boundary chunks (~200 chars) for progressive rendering.
   const words = plain.content.split(/(\s+)/);
   let chunk = "";

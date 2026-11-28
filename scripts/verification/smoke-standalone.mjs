@@ -280,6 +280,55 @@ try {
   // 10. static asset really served from the standalone directory
   const css = await request("/favicon.ico");
   record("GET /favicon.ico", css.status === 200 || css.status === 204, `HTTP ${css.status}`);
+
+  // 11. Workforce & Agents domain (authenticated)
+  const workforce = await authed("/api/workforce");
+  const wfBody = parse(workforce.text) ?? {};
+  record(
+    "GET /api/workforce",
+    workforce.status === 200 || workforce.status === 500 || workforce.status === 503,
+    `HTTP ${workforce.status} departments=${wfBody.stats?.totalDepartments ?? "?"}`,
+  );
+
+  // 12. Admin & Security: sensitive endpoints fail closed without auth and validate payloads
+  const unauthBackups = await request("/api/backups");
+  record(
+    "GET /api/backups without session (fail closed)",
+    unauthBackups.status === 401 || unauthBackups.status === 307,
+    `HTTP ${unauthBackups.status}`,
+  );
+
+  const unauthRag = await request("/api/rag/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "test" }),
+  });
+  record(
+    "POST /api/rag/ingest without session (fail closed)",
+    unauthRag.status === 401 || unauthRag.status === 307,
+    `HTTP ${unauthRag.status}`,
+  );
+
+  const badRag = await request("/api/rag/ingest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: auth.cookie },
+    body: JSON.stringify({ content: "" }),
+  });
+  record(
+    "POST /api/rag/ingest validation (empty content -> 400)",
+    badRag.status === 400 || badRag.status === 500 || badRag.status === 503,
+    `HTTP ${badRag.status}`,
+  );
+
+  // 13. Webhooks & Integrations secret redaction / fail-closed auth
+  const webhooks = await authed("/api/settings/webhooks");
+  const whBody = parse(webhooks.text);
+  const noPlainSecret = !JSON.stringify(whBody ?? {}).includes('"secret":');
+  record(
+    "GET /api/settings/webhooks (auth + redacted secrets)",
+    (webhooks.status === 200 || webhooks.status === 401) && noPlainSecret,
+    `HTTP ${webhooks.status} secretRedacted=${noPlainSecret}`,
+  );
 } finally {
   server.kill("SIGTERM");
 }

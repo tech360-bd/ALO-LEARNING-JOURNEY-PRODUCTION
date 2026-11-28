@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import React, { useState, useCallback } from "react";
@@ -551,6 +550,7 @@ export function AiAgentsView() {
     return {
       id: a.id,
       name: a.name,
+      icon: config.icon || a.icon || 'bot',
       description: a.description || '',
       category: config.category || 'Strategy',
       type: a.type,

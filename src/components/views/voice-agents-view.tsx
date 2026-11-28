@@ -788,10 +788,37 @@ export function VoiceAgentsView() {
     setDeleteOpen(true);
   };
 
-  const handleTest = useCallback((a: VoiceAgent) => {
-    toast.info(`Test call simulation started for "${a.name}" (bn-BD voice)`, {
-      description: a.greetingMessage || 'Greeting not set — using default',
-    });
+  const handleTest = useCallback(async (a: VoiceAgent) => {
+    const text =
+      a.greetingMessage?.trim() ||
+      `Hello, this is ${a.name} speaking. How can I help you today?`;
+    try {
+      const res = await api.post<{
+        audioUrl?: string;
+        provider?: string;
+        simulated?: boolean;
+        warning?: string;
+      }>('/api/v1/tts', {
+        text,
+        language: a.language || 'bn-BD',
+        voiceId: a.voiceId || undefined,
+      });
+
+      if (res.audioUrl && typeof Audio !== 'undefined') {
+        const audio = new Audio(res.audioUrl);
+        audio.play().catch(() => {});
+        toast.success(`Playing greeting audio for "${a.name}"`, {
+          description: `Provider: ${res.provider || 'TTS'}`,
+        });
+      } else {
+        toast.warning(
+          res.warning ||
+            `TTS provider (${res.provider || 'unconfigured'}) is not synthesizing live audio in this environment.`,
+        );
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Voice agent TTS test failed');
+    }
   }, []);
 
   const toggleStatusMutation = useApiMutation<Partial<VoiceAgent>, VoiceAgent>({

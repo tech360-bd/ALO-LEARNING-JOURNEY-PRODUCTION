@@ -2,10 +2,11 @@ import { canManageTeam } from '@/lib/team-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { readBearerToken } from '@/lib/bearer-auth';
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);
     if (!payload || !payload.companyId) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });

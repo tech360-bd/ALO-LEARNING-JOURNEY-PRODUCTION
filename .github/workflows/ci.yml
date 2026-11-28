@@ -92,6 +92,7 @@ jobs:
           check "prisma migrate deploy (re-run must be a no-op)" npx prisma migrate deploy
           check "prisma migrate status" npx prisma migrate status
           check "migration integration test" npm run test:migrations:integration
+          MYSQL_ADMIN_URL="mysql://root:ci-root@127.0.0.1:3306/ci" check "isolated backup and restore verification" npm run test:backup-restore
 
       - name: Schema drift check (migrations must reproduce prisma/schema.prisma)
         run: |
@@ -222,3 +223,194 @@ jobs:
             exit 1
           fi
           echo "No database files tracked"
+
+  docker-smoke:
+    name: Docker build & runtime smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: ci
+          MYSQL_USER: ci
+          MYSQL_PASSWORD: ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      CI: 'true'
+      DATABASE_URL: "mysql://ci:ci@127.0.0.1:3306/ci"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies and apply migrations to isolated MySQL
+        run: |
+          npm ci --ignore-scripts
+          npx prisma migrate deploy
+
+      - name: Build production Docker image
+        run: |
+          docker build --build-arg "RELEASE_SHA=$GITHUB_SHA" -t alo-learning-journey:ci-smoke .
+
+      - name: Run container and verify runtime endpoints
+        env:
+          SMOKE_ADMIN_EMAIL: ci-docker-smoke@alolabs.invalid
+        run: |
+          SMOKE_ADMIN_PASSWORD="$(node -e 'console.log(require("node:crypto").randomBytes(18).toString("hex"))')"
+          NEXTAUTH_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          VAULT_MASTER_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          HASH="$(printf '%s' "$SMOKE_ADMIN_PASSWORD" | node scripts/hash-admin-password.mjs | tail -n 1)"
+
+          docker run -d --name alo-ci-smoke --network host \
+            -e NODE_ENV=production \
+            -e PORT=3061 \
+            -e HOSTNAME=0.0.0.0 \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e NEXTAUTH_URL=http://127.0.0.1:3061 \
+            -e NEXTAUTH_SECRET="$NEXTAUTH_SECRET" \
+            -e VAULT_MASTER_KEY="$VAULT_MASTER_KEY" \
+            -e ADMIN_EMAIL="$SMOKE_ADMIN_EMAIL" \
+            -e ADMIN_PASSWORD_HASH="$HASH" \
+            -e ADMIN_OTP_REQUIRED=false \
+            -e RELEASE_SHA="$GITHUB_SHA" \
+            alo-learning-journey:ci-smoke
+
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3061/api/health >/tmp/docker-health.json 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ready" -eq 1 ] || { echo "::error::Docker container did not become healthy"; exit 1; }
+
+          node - "$GITHUB_SHA" "$SMOKE_ADMIN_EMAIL" "$SMOKE_ADMIN_PASSWORD" <<'NODE'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+          const [expectedSha, email, password] = process.argv.slice(2);
+          const origin = "http://127.0.0.1:3061";
+
+          async function run() {
+            const health = JSON.parse(fs.readFileSync("/tmp/docker-health.json", "utf8"));
+            assert.ok(["healthy", "degraded"].includes(health.status), `unexpected health status: ${health.status}`);
+            assert.equal(health.releaseSha, expectedSha, "releaseSha must match built commit");
+
+            const loginRes = await fetch(`${origin}/login`);
+            assert.equal(loginRes.status, 200, "GET /login must return 200");
+
+            const unauth = await fetch(`${origin}/api/approvals`, { redirect: "manual" });
+            assert.ok(unauth.status === 401 || unauth.status === 307, `unauthenticated /api/approvals returned ${unauth.status}`);
+
+            const csrfRes = await fetch(`${origin}/api/auth/csrf`);
+            const csrf = (await csrfRes.json()).csrfToken;
+            const jar = (csrfRes.headers.getSetCookie?.() ?? []).map((c) => c.split(";")[0]);
+            const authRes = await fetch(`${origin}/api/auth/callback/credentials`, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: jar.join("; ") },
+              body: new URLSearchParams({ csrfToken: csrf, email, password, json: "true" }),
+              redirect: "manual",
+            });
+            const cookies = [...(authRes.headers.getSetCookie?.() ?? []), ...jar].map((c) => c.split(";")[0]);
+
+            const diagRes = await fetch(`${origin}/api/health/diagnose`, { headers: { Cookie: cookies.join("; ") } });
+            assert.equal(diagRes.status, 200, "authenticated /api/health/diagnose must return 200");
+
+            const wfRes = await fetch(`${origin}/api/workforce`, { headers: { Cookie: cookies.join("; ") } });
+            assert.equal(wfRes.status, 200, "authenticated /api/workforce must return 200");
+
+            console.log("Docker container runtime smoke verified:", { status: health.status, releaseSha: health.releaseSha });
+          }
+          run().catch((err) => { console.error(err); process.exit(1); });
+          NODE
+
+      - name: Collect container logs and cleanup
+        if: always()
+        run: |
+          docker logs alo-ci-smoke --tail 80 || true
+          docker rm -f alo-ci-smoke || true
+
+  e2e-playwright:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: ci
+          MYSQL_USER: ci
+          MYSQL_PASSWORD: ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      CI: 'true'
+      DATABASE_URL: "mysql://ci:ci@127.0.0.1:3306/ci"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install dependencies and Playwright Chromium
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Apply migrations and build production standalone app
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run build
+
+      - name: Run Playwright browser E2E suite
+        env:
+          PLAYWRIGHT_PORT: "3097"
+          PLAYWRIGHT_ADMIN_EMAIL: ci-e2e-admin@alolabs.invalid
+        run: |
+          PLAYWRIGHT_ADMIN_PASSWORD="$(node -e 'console.log(require("node:crypto").randomBytes(18).toString("hex"))')"
+          NEXTAUTH_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          JWT_SECRET="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          VAULT_MASTER_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+          ADMIN_PASSWORD_HASH="$(printf '%s' "$PLAYWRIGHT_ADMIN_PASSWORD" | node scripts/hash-admin-password.mjs | tail -n 1)"
+          export PLAYWRIGHT_ADMIN_PASSWORD NEXTAUTH_SECRET JWT_SECRET VAULT_MASTER_KEY ADMIN_PASSWORD_HASH
+          export NODE_ENV=production
+          export NEXTAUTH_URL=http://127.0.0.1:3097
+          export ADMIN_EMAIL="$PLAYWRIGHT_ADMIN_EMAIL"
+          export ADMIN_OTP_REQUIRED=false
+          export MARKETINGOS_ALLOW_REGISTRATION=true
+          export RELEASE_SHA="$GITHUB_SHA"
+          set +e
+          npm run test:e2e > playwright.out 2>&1
+          code=$?
+          set -e
+          cat playwright.out
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=Playwright E2E failed::$(tail -n 45 playwright.out | awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/\r/, "%0D"); print }' | head -c 3800)"
+            exit "$code"
+          fi

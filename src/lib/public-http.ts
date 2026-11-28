@@ -19,9 +19,15 @@ export function publicHttp(raw: string, post?: { body: string; headers: Record<s
   return new Promise((resolve, reject) => {
     const req = https.request(url, { method: post ? 'POST' : 'GET', agent: false, family: 4,
       signal: AbortSignal.timeout(10000), headers: post?.headers,
-      lookup(host, _options, cb) {
+      lookup(host, options, cb) {
+        const wantAll = typeof options === 'object' && options !== null && options.all;
         lookup(host, { family: 4, all: true }, (err, rows) => {
-          if (err || !rows.length || !rows.every(r => publicAddress(r.address))) return cb(new Error('Destination not allowed'), '', 4);
+          if (err || !rows.length || !rows.every(r => publicAddress(r.address))) {
+            const denyErr = new Error('Destination not allowed');
+            if (wantAll) return (cb as unknown as (e: Error) => void)(denyErr);
+            return cb(denyErr, '', 4);
+          }
+          if (wantAll) return (cb as unknown as (e: null, addrs: Array<{ address: string; family: number }>) => void)(null, [{ address: rows[0].address, family: 4 }]);
           cb(null, rows[0].address, 4);
         });
       },

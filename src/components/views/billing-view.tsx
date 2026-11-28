@@ -532,10 +532,149 @@ function PurchaseDialog({ open, onOpenChange, onPurchased }: PurchaseDialogProps
   );
 }
 
+// ─── Plan change dialog ────────────────────────────────────────────────────────
+
+function PlanDialog({
+  open,
+  onOpenChange,
+  plans,
+  currentPlanDisplayName,
+  onSubscribed,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  plans: Plan[];
+  currentPlanDisplayName?: string;
+  onSubscribed: () => void;
+}) {
+  const [selectedPlanId, setSelectedPlanId] = useState<string>('');
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
+  const [saving, setSaving] = useState(false);
+
+  const effectivePlanId = selectedPlanId || plans[0]?.id || '';
+
+  const handleSubscribe = async () => {
+    if (!effectivePlanId) {
+      toast.error('Select a plan');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post('/api/v1/billing/subscribe', {
+        planId: effectivePlanId,
+        billingCycle,
+      });
+      toast.success('Subscription plan updated');
+      onOpenChange(false);
+      onSubscribed();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update subscription');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Choose Subscription Plan</DialogTitle>
+          <DialogDescription>
+            Select a plan and billing cycle for your workspace.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={billingCycle === 'monthly' ? 'default' : 'outline'}
+              onClick={() => setBillingCycle('monthly')}
+              className={billingCycle === 'monthly' ? 'bg-orange-500 hover:bg-orange-600 text-white' : ''}
+            >
+              Monthly
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={billingCycle === 'yearly' ? 'default' : 'outline'}
+              onClick={() => setBillingCycle('yearly')}
+              className={billingCycle === 'yearly' ? 'bg-orange-500 hover:bg-orange-600 text-white' : ''}
+            >
+              Yearly
+            </Button>
+          </div>
+          {plans.length === 0 ? (
+            <div className="rounded-md border p-6 text-center text-sm text-muted-foreground">
+              No active plans returned by /api/v1/billing/plans.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
+              {plans.map((p) => {
+                const isSelected = effectivePlanId === p.id;
+                const isCurrent = currentPlanDisplayName === p.displayName;
+                const price = billingCycle === 'yearly' ? p.priceYearly : p.priceMonthly;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedPlanId(p.id)}
+                    className={`text-left rounded-lg border p-3.5 transition-colors ${
+                      isSelected
+                        ? 'border-orange-500 bg-orange-500/5'
+                        : 'border-border hover:border-orange-500/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm">{p.displayName}</span>
+                      {isCurrent && (
+                        <Badge variant="secondary" className="text-[10px]">
+                          Current
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-lg font-bold mt-1">
+                      ${price}
+                      <span className="text-xs font-normal text-muted-foreground">
+                        /{billingCycle === 'yearly' ? 'yr' : 'mo'}
+                      </span>
+                    </p>
+                    {p.description && (
+                      <p className="text-xs text-muted-foreground mt-1">{p.description}</p>
+                    )}
+                    <div className="mt-2 space-y-0.5 text-[11px] text-muted-foreground">
+                      <div>Up to {p.maxUsers} users · {p.maxPhoneNumbers} phone number(s)</div>
+                      <div>{p.maxAiMinutes} AI min · {p.maxOutboundCallsPerDay} calls/day</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubscribe}
+            disabled={saving || plans.length === 0}
+            className="bg-orange-500 hover:bg-orange-600 text-white"
+          >
+            {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+            Apply Plan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Main View ─────────────────────────────────────────────────────────────────
 
 export function BillingView() {
   const [purchaseOpen, setPurchaseOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
 
   const { data: usage, isLoading: usageLoading, error: usageError, refetch: refetchUsage } =
     useApiQuery<UsageResponse>('/api/v1/billing/usage');
@@ -625,7 +764,7 @@ export function BillingView() {
         <PlanCard
           subscription={usage?.subscription ?? null}
           plans={plans}
-          onUpgrade={() => toast.info('Plan change wizard coming soon')}
+          onUpgrade={() => setPlanOpen(true)}
         />
       )}
 
@@ -831,6 +970,13 @@ export function BillingView() {
         open={purchaseOpen}
         onOpenChange={setPurchaseOpen}
         onPurchased={refetchCredits}
+      />
+      <PlanDialog
+        open={planOpen}
+        onOpenChange={setPlanOpen}
+        plans={plans}
+        currentPlanDisplayName={usage?.subscription?.plan}
+        onSubscribed={refreshAll}
       />
     </div>
   );

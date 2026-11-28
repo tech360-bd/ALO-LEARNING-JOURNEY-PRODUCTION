@@ -2,12 +2,14 @@ import http from 'node:http';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns';
 import { isIP } from 'node:net';
-import { publicAddress } from './public-http.ts';
+import { publicAddress, publicUrl } from './public-http.ts';
 
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const BLOCKED_HOSTS = new Set(['metadata.google.internal', 'metadata.google', 'instance-data.ec2.internal']);
 
 export interface ProviderRequestOptions {
+  method?: 'GET' | 'POST';
+  body?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -18,6 +20,44 @@ export interface ProviderRequestOptions {
 export interface ProviderJsonResponse {
   status: number;
   data: unknown;
+}
+
+/**
+ * Validate a WordPress `site_url` supplied by a tenant:
+ * must be a public HTTPS hostname (no IP literals, no custom ports, no credentials,
+ * no query/fragment) via `publicUrl`. Returns normalized base URL without trailing slash.
+ */
+export function validateWordpressSiteUrl(raw: string): string {
+  const url = publicUrl(raw.trim(), false);
+  if (url.search) {
+    throw new Error('WordPress site_url must not contain query parameters');
+  }
+  const cleanPath = url.pathname.replace(/\/+$/, '');
+  return `${url.origin}${cleanPath}`;
+}
+
+/**
+ * Validate a Mailchimp datacenter prefix (e.g. "us12", "eu1").
+ * Prevents subdomain/host injection in `https://${dc}.api.mailchimp.com/...`.
+ */
+export function validateMailchimpServerPrefix(raw: string): string {
+  const dc = raw.trim().toLowerCase();
+  if (!/^[a-z]{2,4}[0-9]{1,3}$/.test(dc)) {
+    throw new Error('Mailchimp server_prefix must be a valid datacenter code (e.g. us12)');
+  }
+  return dc;
+}
+
+/**
+ * Validate a Shopify store domain (`<shop>.myshopify.com`).
+ * Prevents arbitrary host SSRF and credential exfiltration.
+ */
+export function validateShopifyShopDomain(raw: string): string {
+  const host = raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(host)) {
+    throw new Error('Shopify shop must be a valid <store>.myshopify.com domain');
+  }
+  return host;
 }
 
 export function validateProviderDestination(raw: string, allowLocalOllama = false): URL {
@@ -75,23 +115,34 @@ export async function requestProviderJsonUsing(
 
   return new Promise((resolve, reject) => {
     const req = request(url, {
-      method: 'GET',
+      method: options.method ?? 'GET',
       agent: false,
       family: 4,
       signal,
       headers: options.headers,
-      lookup(host, _lookupOptions, callback) {
+      lookup(host, lookupOptions, callback) {
+        const wantAll = typeof lookupOptions === 'object' && lookupOptions !== null && lookupOptions.all;
+        const reply = (address: string) => {
+          if (wantAll) {
+            return (callback as unknown as (e: null, addrs: Array<{ address: string; family: number }>) => void)(null, [{ address, family: 4 }]);
+          }
+          return callback(null, address, 4);
+        };
+        const fail = (err: Error) => {
+          if (wantAll) return (callback as unknown as (e: Error) => void)(err);
+          return callback(err, '', 4);
+        };
         if (local) {
-          if (host.toLowerCase() === 'localhost') return callback(null, '127.0.0.1', 4);
-          if (host === '127.0.0.1') return callback(null, host, 4);
-          return callback(new Error('Local Ollama host mismatch'), '', 4);
+          if (host.toLowerCase() === 'localhost') return reply('127.0.0.1');
+          if (host === '127.0.0.1') return reply(host);
+          return fail(new Error('Local Ollama host mismatch'));
         }
         resolveHost(host, { family: 4, all: true }, (error, addresses) => {
-          if (error) return callback(new Error('Provider DNS lookup failed'), '', 4);
+          if (error) return fail(new Error('Provider DNS lookup failed'));
           try { assertProviderResolvedAddresses(addresses.map((entry) => entry.address)); }
-          catch (policyError) { return callback(policyError as Error, '', 4); }
+          catch (policyError) { return fail(policyError as Error); }
           // Pin the validated address for this socket; do not perform a second DNS lookup.
-          callback(null, addresses[0].address, 4);
+          reply(addresses[0].address);
         });
       },
     }, (response) => {
@@ -124,6 +175,6 @@ export async function requestProviderJsonUsing(
       });
     });
     req.on('error', reject);
-    req.end();
+    req.end(options.body);
   });
 }

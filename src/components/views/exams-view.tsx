@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState, useMemo } from "react";
@@ -233,7 +232,7 @@ export default function ExamsView() {
 
   // Mutations
   const createMutation = useApiMutation<
-    { name: string; examType: string; subjectId: string; totalMarks: number; startDate: string; endDate: string; status: string },
+    { name: string; examType: string; subjectId: string; totalMarks: number; startDate?: string; endDate?: string; status: string },
     ExamRecord
   >({
     method: "POST",

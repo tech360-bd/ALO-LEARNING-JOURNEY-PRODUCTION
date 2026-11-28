@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import React, { useState, useCallback, useRef, useEffect } from "react";
@@ -80,7 +79,7 @@ const sidebarItemVariants = {
   animate: (i: number) => ({
     opacity: 1,
     x: 0,
-    transition: { delay: i * 0.05, duration: 0.3, ease: "easeOut" },
+    transition: { delay: i * 0.05, duration: 0.3, ease: "easeOut" as const },
   }),
 };
 
@@ -93,7 +92,7 @@ const typingDotVariants = {
       duration: 0.6,
       repeat: Infinity,
       delay: i * 0.15,
-      ease: "easeInOut",
+      ease: "easeInOut" as const,
     },
   }),
 };

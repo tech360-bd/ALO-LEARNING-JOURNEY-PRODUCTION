@@ -34,6 +34,9 @@ server.log
 # Docs don't need to ship
 ALO_HUMAN_AVATAR_PRODUCTION_RELEASE
 deploy/docs
+e2e
+playwright-report
+test-results
 
 # Environment backups are credentials, not build inputs.
 .env.*

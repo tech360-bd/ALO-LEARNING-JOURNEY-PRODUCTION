@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * Tool Registry — the actual tools agents can call.
  *
@@ -295,7 +294,7 @@ registerTool({
       orderBy: { createdAt: 'desc' },
     });
     if (keywords.length === 0) return { success: true, output: 'No tracked keywords yet.' };
-    const lines = keywords.map((k) => `- ${k.keyword} (rank=${k.currentRank || 'n/a'})`);
+    const lines = keywords.map((k) => `- ${k.keyword} (rank=${k.lastPosition ?? 'n/a'})`);
     return {
       success: true,
       output: `Tracked keywords:\n${lines.join('\n')}`,

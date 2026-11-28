@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * ASR Engine — multilingual Speech-to-Text with Bangla support.
  *
@@ -146,8 +145,8 @@ export async function transcribe(input: AsrInput): Promise<AsrResult> {
   try {
     const zai = await createApprovedZai();
     if (input.audioBase64) {
-      const r: any = await zai.audio.asr.create({
-        audio: input.audioBase64 as any,
+      const r: any = await (zai.audio.asr.create as unknown as (body: Record<string, unknown>) => Promise<unknown>)({
+        audio: input.audioBase64,
         language,
         prompt: input.prompt,
       });

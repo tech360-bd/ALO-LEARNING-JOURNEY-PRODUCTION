@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { readBearerToken } from '@/lib/bearer-auth';
 import { executeWithEmployee, getEmployee } from '@/lib/workforce/engine';
 
 export async function POST(req: NextRequest) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const payload = await verifyToken(token);
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Verify the employee exists and belongs to this company
-    const employee = await getEmployee(employeeId);
+    const employee = await getEmployee(employeeId, companyId);
     if (!employee || employee.companyId !== companyId) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }

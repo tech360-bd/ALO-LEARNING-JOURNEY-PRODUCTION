@@ -1,13 +1,13 @@
-// @ts-nocheck — temporary: see audit for fix plan
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { readBearerToken } from '@/lib/bearer-auth';
 import { emitEvent } from '@/lib/events';
 
 // GET /api/keywords — list tracked keywords
 export async function GET(req: NextRequest) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);
     if (!payload || !payload.companyId) {
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
 // POST /api/keywords — add a tracked keyword
 export async function POST(req: NextRequest) {
   try {
-    const token = req.headers.get('Authorization')?.replace('Bearer ', '');
+    const token = readBearerToken(req.headers.get('Authorization'));
     if (!token) return NextResponse.json({ error: 'No token' }, { status: 401 });
     const payload = await verifyToken(token);
     if (!payload || !payload.companyId) {
@@ -51,25 +51,30 @@ export async function POST(req: NextRequest) {
     const keyword = String(body.keyword || '').trim().toLowerCase();
     if (!keyword) return NextResponse.json({ error: 'keyword is required' }, { status: 400 });
 
-    // Use upsert because [companyId, keyword] is unique
-    const tracker = await db.keywordTracker.upsert({
-      where: { companyId_keywordId: { companyId: payload.companyId, keyword } },
-      create: {
-        keyword,
-        searchVolume: Number(body.searchVolume) || 0,
-        difficulty: Math.min(100, Math.max(0, Number(body.difficulty) || 0)),
-        trend: ['up', 'down', 'stable'].includes(body.trend) ? body.trend : 'stable',
-        lastPosition: body.lastPosition != null ? Number(body.lastPosition) : null,
-        competitorPositions: '{}',
-        companyId: payload.companyId,
-      },
-      update: {
-        searchVolume: body.searchVolume != null ? Number(body.searchVolume) : undefined,
-        difficulty: body.difficulty != null ? Math.min(100, Math.max(0, Number(body.difficulty))) : undefined,
-        trend: ['up', 'down', 'stable'].includes(body.trend) ? body.trend : undefined,
-        lastPosition: body.lastPosition != null ? Number(body.lastPosition) : undefined,
-      },
+    const existing = await db.keywordTracker.findFirst({
+      where: { companyId: payload.companyId, keyword },
     });
+    const tracker = existing
+      ? await db.keywordTracker.update({
+          where: { id: existing.id },
+          data: {
+            searchVolume: body.searchVolume != null ? Number(body.searchVolume) : undefined,
+            difficulty: body.difficulty != null ? Math.min(100, Math.max(0, Number(body.difficulty))) : undefined,
+            trend: ['up', 'down', 'stable'].includes(body.trend) ? body.trend : undefined,
+            lastPosition: body.lastPosition != null ? Number(body.lastPosition) : undefined,
+          },
+        })
+      : await db.keywordTracker.create({
+          data: {
+            keyword,
+            searchVolume: Number(body.searchVolume) || 0,
+            difficulty: Math.min(100, Math.max(0, Number(body.difficulty) || 0)),
+            trend: ['up', 'down', 'stable'].includes(body.trend) ? body.trend : 'stable',
+            lastPosition: body.lastPosition != null ? Number(body.lastPosition) : null,
+            competitorPositions: '{}',
+            companyId: payload.companyId,
+          },
+        });
 
     await emitEvent({
       companyId: payload.companyId,

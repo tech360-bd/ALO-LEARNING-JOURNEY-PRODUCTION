@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState, useMemo } from "react";
@@ -225,7 +224,6 @@ export function SocialAccountsView() {
     onSuccess: () => {
       toast.success("Account connected successfully!");
       refetch();
-      resetWizard();
     },
     onError: (err) => toast.error(err),
   });
@@ -270,6 +268,9 @@ export function SocialAccountsView() {
 
   const handleConnect = async () => {
     if (!selectedPlatform || !accessToken.trim()) return;
+    setWizardStep(5);
+    setTesting(true);
+    setConnectSuccess(false);
     try {
       await connectMutation.mutateAsync({
         platform: selectedPlatform,
@@ -279,22 +280,18 @@ export function SocialAccountsView() {
         scopes:
           data?.requirements?.[selectedPlatform]?.scopes || [],
       });
+      setConnectSuccess(true);
     } catch {
-      // error handled in onError
+      setConnectSuccess(false);
+      setWizardStep(4);
+    } finally {
+      setTesting(false);
     }
   };
 
   const handleDisconnect = (id: string, name: string) => {
     disconnectMutation.mutate({ id });
     toast.info(`Disconnecting ${name}...`);
-  };
-
-  const simulateConnectionTest = async () => {
-    setWizardStep(5);
-    setTesting(true);
-    await new Promise((r) => setTimeout(r, 2500));
-    setTesting(false);
-    setConnectSuccess(true);
   };
 
   const requirementItems = useMemo(() => {
@@ -537,7 +534,7 @@ export function SocialAccountsView() {
                       Select the social media platform you want to connect.
                     </p>
                     <div className="grid grid-cols-3 sm:grid-cols-3 gap-3">
-                      {(data?.platforms || missingPlatforms.length > 0 ? data?.platforms : ["Facebook", "Instagram", "LinkedIn", "X", "YouTube", "TikTok", "Pinterest", "Telegram"]).map(
+                      {(data?.platforms && data.platforms.length > 0 ? data.platforms : ["Facebook", "Instagram", "LinkedIn", "X", "YouTube", "TikTok", "Pinterest", "Telegram"]).map(
                         (platform) => {
                           const isConnected =
                             data?.connectedPlatforms?.includes(platform);
@@ -996,7 +993,7 @@ export function SocialAccountsView() {
               <Button
                 size="sm"
                 className="bg-orange-600 hover:bg-orange-700 text-white gap-1"
-                onClick={simulateConnectionTest}
+                onClick={handleConnect}
                 disabled={!accessToken.trim() || connectMutation.isLoading}
               >
                 {connectMutation.isLoading ? (
@@ -1004,17 +1001,17 @@ export function SocialAccountsView() {
                 ) : (
                   <Zap className="h-4 w-4" />
                 )}
-                Test Connection
+                Verify &amp; Connect
               </Button>
             ) : (
               <Button
                 size="sm"
                 className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1"
-                onClick={handleConnect}
+                onClick={resetWizard}
                 disabled={!connectSuccess}
               >
                 <Check className="h-4 w-4" />
-                Complete Setup
+                Done
               </Button>
             )}
           </div>

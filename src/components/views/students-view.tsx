@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 "use client";
 
 import { useState, useCallback } from "react";
@@ -189,7 +188,7 @@ export default function StudentsView() {
   });
   const [addSubmitting, setAddSubmitting] = useState(false);
 
-  const { mutateAsync: createStudent } = useMutation<StudentRecord, unknown>({
+  const { mutateAsync: createStudent } = useApiMutation<Record<string, unknown>, StudentRecord>({
     method: "POST",
     path: "/api/students",
   });

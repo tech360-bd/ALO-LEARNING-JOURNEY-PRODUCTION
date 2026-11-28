@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyToken } from '@/lib/auth';
+import { encryptSecret } from '@/lib/vault';
 
 const PLATFORMS = ['Facebook', 'Instagram', 'LinkedIn', 'X', 'YouTube', 'TikTok', 'Pinterest', 'Telegram'];
 
@@ -15,6 +16,36 @@ const PLATFORM_REQUIREMENTS: Record<string, { oauthUrl?: string; scopes: string[
   Telegram: { oauthUrl: 'https://my.telegram.org', scopes: [], needsBusinessVerification: false, setupGuide: ['Create a Telegram Bot via @BotFather', 'Get Bot API Token', 'Set webhook URL for bot'] },
 };
 
+function serializeAccount(account: {
+  id: string;
+  platform: string;
+  accountName: string;
+  accountHandle: string | null;
+  accountId: string | null;
+  avatarUrl: string | null;
+  accessToken: string | null;
+  scopes: string;
+  status: string;
+  lastSyncedAt: Date | null;
+  connectedAt: Date;
+  companyId: string;
+}) {
+  return {
+    id: account.id,
+    platform: account.platform,
+    accountName: account.accountName,
+    accountHandle: account.accountHandle,
+    accountId: account.accountId,
+    avatarUrl: account.avatarUrl,
+    tokenConfigured: Boolean(account.accessToken),
+    scopes: account.scopes,
+    status: account.status,
+    lastSyncedAt: account.lastSyncedAt,
+    connectedAt: account.connectedAt,
+    companyId: account.companyId,
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const token = req.headers.get('Authorization')?.replace('Bearer ', '');
@@ -27,11 +58,11 @@ export async function GET(req: NextRequest) {
       orderBy: { connectedAt: 'desc' },
     });
 
-    const connectedPlatforms = accounts.map(a => a.platform);
-    const missingPlatforms = PLATFORMS.filter(p => !connectedPlatforms.includes(p));
+    const connectedPlatforms = accounts.map((a) => a.platform);
+    const missingPlatforms = PLATFORMS.filter((p) => !connectedPlatforms.includes(p));
 
     return NextResponse.json({
-      accounts,
+      accounts: accounts.map(serializeAccount),
       platforms: PLATFORMS,
       connectedPlatforms,
       missingPlatforms,
@@ -49,25 +80,44 @@ export async function POST(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
-    const { platform, accountName, accountHandle, accessToken, scopes } = await req.json();
-    if (!platform || !accessToken) {
-      return NextResponse.json({ error: 'Platform and access token required' }, { status: 400 });
+    const body = (await req.json().catch(() => null)) as {
+      platform?: unknown;
+      accountName?: unknown;
+      accountHandle?: unknown;
+      accessToken?: unknown;
+      scopes?: unknown;
+    } | null;
+    const platform = typeof body?.platform === 'string' ? body.platform.trim() : '';
+    const accessToken = typeof body?.accessToken === 'string' ? body.accessToken.trim() : '';
+    const accountName = typeof body?.accountName === 'string' ? body.accountName.trim().slice(0, 120) : '';
+    const accountHandle = typeof body?.accountHandle === 'string' ? body.accountHandle.trim().slice(0, 120) : undefined;
+    const scopes = Array.isArray(body?.scopes)
+      ? body.scopes.filter((s): s is string => typeof s === 'string').slice(0, 30)
+      : [];
+
+    if (!platform || !PLATFORMS.includes(platform)) {
+      return NextResponse.json({ error: 'Supported platform is required' }, { status: 400 });
     }
+    if (accessToken.length < 8) {
+      return NextResponse.json({ error: 'Valid access token (min 8 chars) is required' }, { status: 400 });
+    }
+
+    const encrypted = encryptSecret(accessToken).ciphertext;
 
     const account = await db.socialAccount.create({
       data: {
         platform,
         accountName: accountName || `My ${platform}`,
         accountHandle,
-        accessToken: btoa(accessToken),
-        scopes: JSON.stringify(scopes || []),
+        accessToken: encrypted,
+        scopes: JSON.stringify(scopes),
         status: 'active',
         lastSyncedAt: new Date(),
         companyId: payload.companyId,
       },
     });
 
-    return NextResponse.json({ account });
+    return NextResponse.json({ account: serializeAccount(account) });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -80,8 +130,20 @@ export async function DELETE(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
-    const { id } = await req.json();
-    await db.socialAccount.delete({ where: { id, companyId: payload.companyId } });
+    const body = (await req.json().catch(() => null)) as { id?: unknown } | null;
+    const id = typeof body?.id === 'string' ? body.id.trim() : '';
+    if (!id) {
+      return NextResponse.json({ error: 'Account id is required' }, { status: 400 });
+    }
+
+    const existing = await db.socialAccount.findFirst({
+      where: { id, companyId: payload.companyId },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: 'Social account not found' }, { status: 404 });
+    }
+
+    await db.socialAccount.delete({ where: { id: existing.id } });
 
     return NextResponse.json({ success: true });
   } catch {

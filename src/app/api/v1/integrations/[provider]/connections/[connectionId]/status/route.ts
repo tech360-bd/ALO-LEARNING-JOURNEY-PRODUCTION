@@ -19,13 +19,13 @@ import { getSessionContext, unauthorized, notFound, ok } from '@/lib/v1-middlewa
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest, { params }: { params: Promise<{ connectionId: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ provider: string; connectionId: string }> }) {
   const ctx = await getSessionContext(request);
   if (!('authenticated' in ctx && ctx.authenticated)) return unauthorized();
 
-  const { connectionId } = await params;
+  const { provider: providerSlug, connectionId } = await params;
   const integration = await db.integration.findFirst({
-    where: { id: connectionId, companyId: ctx.companyId },
+    where: { id: connectionId, companyId: ctx.companyId, provider: providerSlug },
     include: { secrets: true, resources: true },
   });
   if (!integration) return notFound('integration not found');

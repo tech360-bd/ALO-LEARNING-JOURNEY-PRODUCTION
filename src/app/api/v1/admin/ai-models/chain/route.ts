@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * GET /api/v1/admin/ai-models/chain
  *
@@ -36,7 +35,19 @@ export async function GET(request: NextRequest) {
     orderBy: [{ priority: 'asc' }, { label: 'asc' }],
   });
 
-  const chain = providers.map((p) => {
+  type ChainStep = {
+    provider: string;
+    label: string;
+    model: string | null;
+    modelDisplayName: string | null;
+    priority: number;
+    api_key_configured: boolean | null;
+    last_status: string | null;
+    last_checked_at: string | null;
+    will_skip_if_unconfigured: boolean;
+  };
+
+  const chain: ChainStep[] = providers.map((p) => {
     const defaultModel = p.models.find((m) => m.isDefault) || p.models[0];
     const apiKeyConfigured =
       !!p.secretCipher ||

@@ -1,8 +1,8 @@
-// @ts-nocheck — temporary: see audit for fix plan
 // ─── MarketingOS Security Utilities ────────────────────────────────────
 // Rate limiting, input sanitization, audit logging, permission checks
 // ───────────────────────────────────────────────────────────────────────────────
 
+import { isIP } from "node:net";
 import { db } from "@/lib/db";
 import { hasPermission } from "@/lib/auth";
 
@@ -71,23 +71,33 @@ export function sanitizeInput(input: string): string {
 
 export interface AuditLogData {
   userId?: string;
+  companyId?: string;
   action: string;
   resource: string;
   resourceId?: string;
-  details?: object;
+  details?: Record<string, unknown>;
   ipAddress?: string;
 }
 
 export async function createAuditLog(data: AuditLogData): Promise<void> {
   try {
+    const cleanIp = data.ipAddress && isIP(data.ipAddress.trim()) > 0 ? data.ipAddress.trim() : undefined;
+    const payload =
+      data.details || cleanIp
+        ? JSON.stringify({
+            ...(data.details || {}),
+            ...(cleanIp ? { ipAddress: cleanIp } : {}),
+          })
+        : null;
+
     await db.mosAuditLog.create({
       data: {
         userId: data.userId || null,
+        companyId: data.companyId || null,
         action: data.action,
         resource: data.resource,
         resourceId: data.resourceId || null,
-        details: data.details ? JSON.stringify(data.details) : null,
-        ipAddress: undefined, // data.ipAddress || null,
+        details: payload,
       },
     });
   } catch (error) {
@@ -107,20 +117,36 @@ export function validatePermission(
 
 // ─── IP Extraction ─────────────────────────────────────────────────────────────
 
+/**
+ * Extract and validate the client IP address from reverse-proxy headers.
+ * Rejects non-IP strings (log injection / header spoofing) via `node:net` `isIP`.
+ * Prefers single-value proxy-set headers (`x-real-ip`, `cf-connecting-ip`, `true-client-ip`),
+ * and takes the rightmost valid hop from `x-forwarded-for` (appended by the trusted proxy).
+ */
 export function ipFromRequest(request: Request): string {
-  const headers = [
-    "x-forwarded-for",
+  const singleHeaders = [
     "x-real-ip",
     "cf-connecting-ip",
-    "x-client-ip",
     "true-client-ip",
   ];
-  for (const header of headers) {
-    const value = request.headers.get(header);
-    if (value) {
-      return value.split(",")[0].trim();
+  for (const header of singleHeaders) {
+    const raw = request.headers.get(header)?.trim();
+    if (raw && isIP(raw) > 0) {
+      return raw;
     }
   }
+
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) {
+    const parts = xff.split(",").map((s) => s.trim()).filter(Boolean);
+    // Reverse proxy appends the real client IP on the right; left-side entries can be spoofed.
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (isIP(parts[i]) > 0) {
+        return parts[i];
+      }
+    }
+  }
+
   return "127.0.0.1";
 }
 

@@ -25,6 +25,7 @@ import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'crypt
 
 const KEY_VERSION = 1;
 const IV_LENGTH = 12; // GCM standard nonce length
+const AUTH_TAG_LENGTH = 16; // GCM full 128-bit authentication tag
 
 let _masterKey: Buffer | null = null;
 
@@ -104,6 +105,9 @@ export function decryptSecret(envelope: string): string {
   const parts = envelope.split(':');
   if (parts.length !== 4) throw new Error('decryptSecret: malformed envelope (expected 4 parts)');
   const [versionStr, ivB64, ctB64, tagB64] = parts;
+  if (!/^\d+$/.test(versionStr)) {
+    throw new Error('decryptSecret: invalid key version format');
+  }
   const version = parseInt(versionStr, 10);
   if (version !== KEY_VERSION) {
     throw new Error(`decryptSecret: unknown key version ${version}`);
@@ -112,7 +116,13 @@ export function decryptSecret(envelope: string): string {
   const iv = Buffer.from(ivB64, 'base64');
   const ct = Buffer.from(ctB64, 'base64');
   const authTag = Buffer.from(tagB64, 'base64');
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  if (iv.length !== IV_LENGTH) {
+    throw new Error('decryptSecret: invalid IV length');
+  }
+  if (authTag.length !== AUTH_TAG_LENGTH) {
+    throw new Error('decryptSecret: invalid authTag length');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
   const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
   return pt.toString('utf8');
