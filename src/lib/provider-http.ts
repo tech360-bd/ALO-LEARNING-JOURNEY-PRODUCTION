@@ -2,12 +2,14 @@ import http from 'node:http';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns';
 import { isIP } from 'node:net';
-import { publicAddress } from './public-http.ts';
+import { publicAddress, publicUrl } from './public-http.ts';
 
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024;
 const BLOCKED_HOSTS = new Set(['metadata.google.internal', 'metadata.google', 'instance-data.ec2.internal']);
 
 export interface ProviderRequestOptions {
+  method?: 'GET' | 'POST';
+  body?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -18,6 +20,44 @@ export interface ProviderRequestOptions {
 export interface ProviderJsonResponse {
   status: number;
   data: unknown;
+}
+
+/**
+ * Validate a WordPress `site_url` supplied by a tenant:
+ * must be a public HTTPS hostname (no IP literals, no custom ports, no credentials,
+ * no query/fragment) via `publicUrl`. Returns normalized base URL without trailing slash.
+ */
+export function validateWordpressSiteUrl(raw: string): string {
+  const url = publicUrl(raw.trim(), false);
+  if (url.search) {
+    throw new Error('WordPress site_url must not contain query parameters');
+  }
+  const cleanPath = url.pathname.replace(/\/+$/, '');
+  return `${url.origin}${cleanPath}`;
+}
+
+/**
+ * Validate a Mailchimp datacenter prefix (e.g. "us12", "eu1").
+ * Prevents subdomain/host injection in `https://${dc}.api.mailchimp.com/...`.
+ */
+export function validateMailchimpServerPrefix(raw: string): string {
+  const dc = raw.trim().toLowerCase();
+  if (!/^[a-z]{2,4}[0-9]{1,3}$/.test(dc)) {
+    throw new Error('Mailchimp server_prefix must be a valid datacenter code (e.g. us12)');
+  }
+  return dc;
+}
+
+/**
+ * Validate a Shopify store domain (`<shop>.myshopify.com`).
+ * Prevents arbitrary host SSRF and credential exfiltration.
+ */
+export function validateShopifyShopDomain(raw: string): string {
+  const host = raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(host)) {
+    throw new Error('Shopify shop must be a valid <store>.myshopify.com domain');
+  }
+  return host;
 }
 
 export function validateProviderDestination(raw: string, allowLocalOllama = false): URL {
@@ -75,7 +115,7 @@ export async function requestProviderJsonUsing(
 
   return new Promise((resolve, reject) => {
     const req = request(url, {
-      method: 'GET',
+      method: options.method ?? 'GET',
       agent: false,
       family: 4,
       signal,
@@ -124,6 +164,6 @@ export async function requestProviderJsonUsing(
       });
     });
     req.on('error', reject);
-    req.end();
+    req.end(options.body);
   });
 }

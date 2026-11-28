@@ -19,13 +19,13 @@ import { emitEvent } from '@/lib/events';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ connectionId: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ provider: string; connectionId: string }> }) {
   const ctx = await getSessionContext(request);
   if (!('authenticated' in ctx && ctx.authenticated)) return unauthorized();
 
-  const { connectionId } = await params;
+  const { provider: providerSlug, connectionId } = await params;
   const integration = await db.integration.findFirst({
-    where: { id: connectionId, companyId: ctx.companyId },
+    where: { id: connectionId, companyId: ctx.companyId, provider: providerSlug },
     include: { resources: true },
   });
   if (!integration) return notFound('integration not found');

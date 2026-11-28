@@ -24,19 +24,23 @@
  */
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
-import { getSessionContext, unauthorized, notFound, ok, badRequest } from '@/lib/v1-middleware';
+import { getSessionContext, unauthorized, notFound, ok } from '@/lib/v1-middleware';
 import { getProvider } from '@/lib/providers';
 import { decryptSecret } from '@/lib/vault';
+import { requestProviderJson, validateShopifyShopDomain } from '@/lib/provider-http';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ connectionId: string }> }) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ provider: string; connectionId: string }> }
+) {
   const ctx = await getSessionContext(request);
   if (!('authenticated' in ctx && ctx.authenticated)) return unauthorized();
 
-  const { connectionId } = await params;
+  const { provider: providerSlug, connectionId } = await params;
   const integration = await db.integration.findFirst({
-    where: { id: connectionId, companyId: ctx.companyId },
+    where: { id: connectionId, companyId: ctx.companyId, provider: providerSlug },
     include: { secrets: true, resources: true },
   });
   if (!integration) return notFound('integration not found');
@@ -56,7 +60,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const accessToken = accessTokenRow ? decryptSecret(accessTokenRow.ciphertext) : null;
 
   if (integration.authMethod === 'oauth' && accessToken) {
-    const probe = await probeProvider(integration.provider, accessToken);
+    const shopRow = integration.resources.find((r) => r.type === 'manual_field' && r.resourceId === 'shop');
+    const probe = await probeProvider(integration.provider, accessToken, shopRow?.name || undefined);
     credentialStatus = probe.credentialStatus;
     connectionStatus = probe.connectionStatus;
   } else if (integration.authMethod === 'manual') {
@@ -112,31 +117,50 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
 async function probeProvider(
   provider: string,
-  accessToken: string
-): Promise<{ credentialStatus: 'valid' | 'expired' | 'revoked' | 'unavailable'; connectionStatus: any }> {
+  accessToken: string,
+  shopDomain?: string
+): Promise<{ credentialStatus: 'valid' | 'expired' | 'revoked' | 'unavailable'; connectionStatus: 'connected' | 'action_required' | 'expired' | 'revoked' | 'unavailable' | 'error' }> {
   // Pick a low-cost endpoint per provider — should return 200 if the token
-  // is active, 401 if expired, 403 if revoked.
-  const probeEndpoints: Record<string, string> = {
-    google: 'https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + encodeURIComponent(accessToken),
-    youtube: 'https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=' + encodeURIComponent(accessToken),
-    meta: 'https://graph.facebook.com/v19.0/me?access_token=' + encodeURIComponent(accessToken),
-    linkedin: 'https://api.linkedin.com/v2/userinfo',
-    x: 'https://api.twitter.com/2/users/me',
-    tiktok: 'https://open.tiktokapis.com/v2/user/info/',
-    pinterest: 'https://api.pinterest.com/v5/user_account',
-    shopify: '', // requires shop domain — skip probe, assume valid
-    stripe: 'https://api.stripe.com/v1/accounts?limit=1',
-    hubspot: 'https://api.hubapi.com/oauth/v1/access-tokens/' + encodeURIComponent(accessToken),
-  };
-
-  const endpoint = probeEndpoints[provider];
-  if (!endpoint) {
-    // Unknown probe — assume valid (let /discover be the source of truth)
-    return { credentialStatus: 'valid', connectionStatus: 'connected' };
-  }
-
+  // is active, 401 if expired, 403 if revoked. All outbound requests route
+  // through requestProviderJson (HTTPS, DNS pinning, no redirects, timeout).
   try {
-    const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${accessToken}` } });
+    let res;
+    if (provider === 'google' || provider === 'youtube') {
+      res = await requestProviderJson('https://oauth2.googleapis.com/tokeninfo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+        body: `access_token=${encodeURIComponent(accessToken)}`,
+        timeoutMs: 10_000,
+      });
+    } else if (provider === 'shopify') {
+      if (!shopDomain) {
+        return { credentialStatus: 'valid', connectionStatus: 'connected' };
+      }
+      const validatedShop = validateShopifyShopDomain(shopDomain);
+      res = await requestProviderJson(`https://${validatedShop}/admin/api/2024-10/shop.json`, {
+        headers: { 'X-Shopify-Access-Token': accessToken, Accept: 'application/json' },
+        timeoutMs: 10_000,
+      });
+    } else {
+      const probeEndpoints: Record<string, string> = {
+        meta: 'https://graph.facebook.com/v19.0/me',
+        linkedin: 'https://api.linkedin.com/v2/userinfo',
+        x: 'https://api.twitter.com/2/users/me',
+        tiktok: 'https://open.tiktokapis.com/v2/user/info/',
+        pinterest: 'https://api.pinterest.com/v5/user_account',
+        stripe: 'https://api.stripe.com/v1/accounts?limit=1',
+        hubspot: `https://api.hubapi.com/oauth/v1/access-tokens/${encodeURIComponent(accessToken)}`,
+      };
+      const endpoint = probeEndpoints[provider];
+      if (!endpoint) {
+        return { credentialStatus: 'valid', connectionStatus: 'connected' };
+      }
+      res = await requestProviderJson(endpoint, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+        timeoutMs: 10_000,
+      });
+    }
+
     if (res.status === 200) return { credentialStatus: 'valid', connectionStatus: 'connected' };
     if (res.status === 401) return { credentialStatus: 'expired', connectionStatus: 'expired' };
     if (res.status === 403) return { credentialStatus: 'revoked', connectionStatus: 'revoked' };

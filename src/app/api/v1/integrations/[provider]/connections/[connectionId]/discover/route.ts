@@ -1,44 +1,50 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
- * Resource Discovery — POST /api/v1/integrations/{connection_id}/discover
- *
- * Phase 4 of the Integration Setup Agent contract.
+ * Resource Discovery — POST /api/v1/integrations/{provider}/connections/{connection_id}/discover
  *
  * Calls the provider's discovery API server-to-server using the encrypted
- * access token from the vault. Returns only non-secret resources the user
- * is authorized to access.
- *
- * Discovery strategies:
- *   - google:           fans out to Search Console + YouTube + GA4 + GTM
- *   - youtube:          YouTube channels + brand accounts
- *   - meta:             Pages + IG accounts + ad accounts + pixels + WA
- *   - linkedin:         Member profile + organizations
- *   - wordpress:        site identity via /wp-json/
- *   - shopify:          shop info + product counts
- *   - mailchimp:        audiences via /lists
- *   - sendgrid:         sender identities
- *
- * Rules:
- *   - Discover only resources covered by granted scopes.
- *   - Do NOT claim inaccessible resources don't exist.
- *   - Distinguish "not found" from "permission not granted".
- *   - Never return access tokens to the AI model.
+ * access token or manual credentials from the vault via `requestProviderJson`
+ * (HTTPS/public DNS only, DNS-pinned sockets, no redirects, bounded response,
+ * timeout). Returns only non-secret resources the user is authorized to access.
  */
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { getSessionContext, unauthorized, notFound, badRequest, ok } from '@/lib/v1-middleware';
 import { decryptSecret } from '@/lib/vault';
 import { getProvider } from '@/lib/providers';
+import {
+  requestProviderJson,
+  validateMailchimpServerPrefix,
+  validateShopifyShopDomain,
+  validateWordpressSiteUrl,
+} from '@/lib/provider-http';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ connectionId: string }> }) {
+type IntegrationRecord = {
+  id: string;
+  provider: string;
+  companyId: string;
+  secrets: Array<{ kind: string; ciphertext: string }>;
+};
+
+type DiscoveredItem = {
+  id: string;
+  name?: string | null;
+  type?: string;
+  permission?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ provider: string; connectionId: string }> }
+) {
   const ctx = await getSessionContext(request);
   if (!('authenticated' in ctx && ctx.authenticated)) return unauthorized();
 
-  const { connectionId } = await params;
+  const { provider: providerSlug, connectionId } = await params;
   const integration = await db.integration.findFirst({
-    where: { id: connectionId, companyId: ctx.companyId },
+    where: { id: connectionId, companyId: ctx.companyId, provider: providerSlug },
     include: { secrets: true },
   });
   if (!integration) return notFound('integration not found');
@@ -49,35 +55,37 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const provider = getProvider(integration.provider);
   if (!provider) return notFound(`unknown provider: ${integration.provider}`);
 
-  // Resolve the access token from the vault (manual providers may not have one)
   const accessTokenRow = integration.secrets.find((s) => s.kind === 'access_token');
   const accessToken = accessTokenRow ? decryptSecret(accessTokenRow.ciphertext) : null;
 
-  // Dispatch to the right discoverer
   let discovered: Record<string, unknown>;
   try {
     discovered = await runDiscovery(provider.discoverer, integration, accessToken);
-  } catch (e: any) {
+  } catch (err) {
+    const safeMsg = err instanceof Error && /HTTPS|public DNS|non-public|redirects|domain|prefix|site_url|HTTP \d+/i.test(err.message)
+      ? err.message
+      : 'Provider discovery request failed';
     await db.integrationLog.create({
       data: {
         integrationId: integration.id,
         action: 'discover',
         outcome: 'failure',
-        message: e?.message || String(e),
+        message: safeMsg,
         actorUserId: ctx.userId,
         source: 'api',
       },
     });
     return Response.json(
-      { ok: false, error: 'discovery_failed', message: e?.message || 'unknown error' },
+      { ok: false, error: 'discovery_failed', message: safeMsg },
       { status: 502 }
     );
   }
 
-  // Persist discovered resources (upsert; preserve user selections)
   for (const [type, items] of Object.entries(discovered)) {
     if (!Array.isArray(items)) continue;
-    for (const item of items as any[]) {
+    for (const rawItem of items) {
+      const item = rawItem as DiscoveredItem;
+      if (!item || item.id === undefined || item.id === null) continue;
       const resourceId = String(item.id);
       const name = item.name || null;
       const permission = item.permission || null;
@@ -103,7 +111,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       integrationId: integration.id,
       action: 'discover',
       outcome: 'success',
-      message: `discovered ${Object.values(discovered).reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0)} resources`,
+      message: `discovered ${Object.values(discovered).reduce<number>((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0)} resources`,
       actorUserId: ctx.userId,
       source: 'api',
     },
@@ -112,11 +120,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   return ok({ provider: integration.provider, resources: discovered });
 }
 
-// ─── Discoverer dispatch ─────────────────────────────────────────────────────
+async function providerGetJson(url: string, headers: Record<string, string>): Promise<Record<string, unknown>> {
+  const res = await requestProviderJson(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json', ...headers },
+    timeoutMs: 12_000,
+  });
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`provider HTTP ${res.status}`);
+  }
+  return (res.data ?? {}) as Record<string, unknown>;
+}
 
 async function runDiscovery(
   discoverer: string,
-  integration: { id: string; provider: string; companyId: string; secrets: any[] },
+  integration: IntegrationRecord,
   accessToken: string | null
 ): Promise<Record<string, unknown>> {
   switch (discoverer) {
@@ -126,12 +144,12 @@ async function runDiscovery(
     case 'google_gtm':
     case 'google_ads':
     case 'google_business':
-      return discoverGoogle(integration, accessToken);
+      return discoverGoogle(accessToken);
     case 'meta_pages':
     case 'meta_ad_accounts':
     case 'meta_pixels':
     case 'meta_whatsapp':
-      return discoverMeta(integration, accessToken);
+      return discoverMeta(accessToken);
     case 'linkedin_organizations':
       return discoverLinkedin(accessToken);
     case 'x_account':
@@ -157,8 +175,7 @@ async function runDiscovery(
   }
 }
 
-// ─── Google — fan out to Search Console + YouTube + GA4 + GTM ────────────────
-async function discoverGoogle(_integration: any, accessToken: string | null): Promise<Record<string, unknown>> {
+async function discoverGoogle(accessToken: string | null): Promise<Record<string, unknown>> {
   if (!accessToken) return { error: 'no access token — connect via OAuth first' };
   const [searchConsole, youtube, ga4, gtm] = await Promise.allSettled([
     discoverGoogleSearchConsole(accessToken),
@@ -175,32 +192,32 @@ async function discoverGoogle(_integration: any, accessToken: string | null): Pr
 }
 
 function settled<T>(p: PromiseSettledResult<T>): T | { error: string } {
-  return p.status === 'fulfilled' ? p.value : { error: (p as PromiseRejectedResult).reason?.message || 'request failed' };
+  return p.status === 'fulfilled'
+    ? p.value
+    : { error: p.reason instanceof Error ? p.reason.message : 'request failed' };
 }
 
 async function discoverGoogleSearchConsole(token: string) {
-  const res = await fetch('https://www.googleapis.com/webmasters/v3/sites', {
-    headers: { Authorization: `Bearer ${token}` },
+  const data = await providerGetJson('https://www.googleapis.com/webmasters/v3/sites', {
+    Authorization: `Bearer ${token}`,
   });
-  if (!res.ok) throw new Error(`search console HTTP ${res.status}`);
-  const data: any = await res.json();
-  return (data.siteEntry || []).map((s: any) => ({
-    id: s.siteUrl,
-    name: s.siteUrl,
-    permission: s.permissionLevel,
+  const siteEntry = Array.isArray(data.siteEntry) ? data.siteEntry : [];
+  return siteEntry.map((s: Record<string, unknown>) => ({
+    id: String(s.siteUrl || ''),
+    name: String(s.siteUrl || ''),
+    permission: typeof s.permissionLevel === 'string' ? s.permissionLevel : null,
     type: 'search_console_site',
     metadata: { siteUrl: s.siteUrl, permissionLevel: s.permissionLevel },
   }));
 }
 
 async function discoverYouTube(token: string) {
-  const res = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&mine=true', {
-    headers: { Authorization: `Bearer ${token}` },
+  const data = await providerGetJson('https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&mine=true', {
+    Authorization: `Bearer ${token}`,
   });
-  if (!res.ok) throw new Error(`youtube HTTP ${res.status}`);
-  const data: any = await res.json();
-  return (data.items || []).map((c: any) => ({
-    id: c.id,
+  const items = Array.isArray(data.items) ? data.items : [];
+  return items.map((c: Record<string, any>) => ({
+    id: String(c.id || ''),
     name: c.snippet?.title,
     type: 'youtube_channel',
     permission: 'owner',
@@ -209,13 +226,12 @@ async function discoverYouTube(token: string) {
 }
 
 async function discoverGA4(token: string) {
-  const res = await fetch('https://analyticsadmin.googleapis.com/v1beta/properties?show_deleted=false', {
-    headers: { Authorization: `Bearer ${token}` },
+  const data = await providerGetJson('https://analyticsadmin.googleapis.com/v1beta/properties?show_deleted=false', {
+    Authorization: `Bearer ${token}`,
   });
-  if (!res.ok) throw new Error(`ga4 HTTP ${res.status}`);
-  const data: any = await res.json();
-  return (data.properties || []).map((p: any) => ({
-    id: p.name.replace('properties/', ''),
+  const props = Array.isArray(data.properties) ? data.properties : [];
+  return props.map((p: Record<string, any>) => ({
+    id: String(p.name || '').replace('properties/', ''),
     name: p.displayName,
     type: 'ga4_property',
     permission: 'reader',
@@ -224,100 +240,113 @@ async function discoverGA4(token: string) {
 }
 
 async function discoverGTM(token: string) {
-  const res = await fetch('https://tagmanager.googleapis.com/tagmanager/v2/accounts', {
-    headers: { Authorization: `Bearer ${token}` },
+  const data = await providerGetJson('https://tagmanager.googleapis.com/tagmanager/v2/accounts', {
+    Authorization: `Bearer ${token}`,
   });
-  if (!res.ok) throw new Error(`gtm HTTP ${res.status}`);
-  const data: any = await res.json();
-  const out: any[] = [];
-  for (const a of data.account || []) {
-    const containersRes = await fetch(`https://tagmanager.googleapis.com/tagmanager/v2/accounts/${a.accountId}/containers`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (containersRes.ok) {
-      const cs: any = await containersRes.json();
-      for (const c of cs.container || []) {
-        out.push({
-          id: `${a.accountId}-${c.publicId}`,
-          name: `${a.name} / ${c.name}`,
-          type: 'gtm_container',
-          permission: a.tagManagerId ? 'owner' : 'user',
-          metadata: { publicId: c.publicId, usageContext: c.usageContext },
-        });
-      }
+  const accounts = Array.isArray(data.account) ? data.account : [];
+  const out: DiscoveredItem[] = [];
+  for (const a of accounts as Array<Record<string, any>>) {
+    const accountId = encodeURIComponent(String(a.accountId || ''));
+    if (!accountId) continue;
+    const cs = await providerGetJson(`https://tagmanager.googleapis.com/tagmanager/v2/accounts/${accountId}/containers`, {
+      Authorization: `Bearer ${token}`,
+    }).catch(() => null);
+    const containers = Array.isArray(cs?.container) ? cs.container : [];
+    for (const c of containers as Array<Record<string, any>>) {
+      out.push({
+        id: `${a.accountId}-${c.publicId}`,
+        name: `${a.name} / ${c.name}`,
+        type: 'gtm_container',
+        permission: a.tagManagerId ? 'owner' : 'user',
+        metadata: { publicId: c.publicId, usageContext: c.usageContext },
+      });
     }
   }
   return out;
 }
 
-// ─── Meta — Pages + IG + Ad accounts + Pixels + WhatsApp ─────────────────────
-async function discoverMeta(_integration: any, accessToken: string | null) {
+async function discoverMeta(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
   const [pages, adAccounts] = await Promise.allSettled([
-    fetchJson(`https://graph.facebook.com/v19.0/me/accounts?fields=id,name,category,access_token&access_token=${accessToken}`),
-    fetchJson(`https://graph.facebook.com/v19.0/me/adaccounts?fields=id,name,account_id,currency&access_token=${accessToken}`),
+    providerGetJson('https://graph.facebook.com/v19.0/me/accounts?fields=id,name,category,access_token', {
+      Authorization: `Bearer ${accessToken}`,
+    }),
+    providerGetJson('https://graph.facebook.com/v19.0/me/adaccounts?fields=id,name,account_id,currency', {
+      Authorization: `Bearer ${accessToken}`,
+    }),
   ]);
-  const pagesList = pages.status === 'fulfilled' ? pages.value.data || [] : [];
-  const adsList = adAccounts.status === 'fulfilled' ? adAccounts.value.data || [] : [];
+  const pagesList = pages.status === 'fulfilled' && Array.isArray(pages.value.data) ? (pages.value.data as Array<Record<string, any>>) : [];
+  const adsList = adAccounts.status === 'fulfilled' && Array.isArray(adAccounts.value.data) ? (adAccounts.value.data as Array<Record<string, any>>) : [];
 
-  // For each page, fetch IG account + pixels in parallel
-  const instagramAccounts: any[] = [];
-  const pixels: any[] = [];
+  const instagramAccounts: Array<Record<string, any>> = [];
+  const pixels: Array<{ id: string; name: string; page_id: string }> = [];
   await Promise.all(
-    pagesList.map(async (page: any) => {
-      const igRes = await fetchJson(
-        `https://graph.facebook.com/v19.0/${page.id}?fields=connected_instagram_account{username,name,followers_count}&access_token=${page.access_token || accessToken}`
+    pagesList.map(async (page) => {
+      const pageId = encodeURIComponent(String(page.id || ''));
+      const pageToken = typeof page.access_token === 'string' && page.access_token ? page.access_token : accessToken;
+      const igRes = await providerGetJson(
+        `https://graph.facebook.com/v19.0/${pageId}?fields=connected_instagram_account{username,name,followers_count}`,
+        { Authorization: `Bearer ${pageToken}` }
       ).catch(() => null);
-      if (igRes?.connected_instagram_account) {
-        instagramAccounts.push({ ...igRes.connected_instagram_account, page_id: page.id });
+      if (igRes?.connected_instagram_account && typeof igRes.connected_instagram_account === 'object') {
+        instagramAccounts.push({ ...(igRes.connected_instagram_account as Record<string, any>), page_id: String(page.id) });
       }
-      const pxRes = await fetchJson(
-        `https://graph.facebook.com/v19.0/${page.id}/adaccounts?fields=pixels&access_token=${page.access_token || accessToken}`
+      const pxRes = await providerGetJson(
+        `https://graph.facebook.com/v19.0/${pageId}/adaccounts?fields=pixels`,
+        { Authorization: `Bearer ${pageToken}` }
       ).catch(() => null);
-      for (const acct of pxRes?.data || []) {
-        for (const px of acct.pixels?.data || []) {
-          pixels.push({ id: px.id, name: px.name, page_id: page.id });
+      const pxAccounts = Array.isArray(pxRes?.data) ? (pxRes.data as Array<Record<string, any>>) : [];
+      for (const acct of pxAccounts) {
+        const pxData = Array.isArray(acct.pixels?.data) ? (acct.pixels.data as Array<Record<string, any>>) : [];
+        for (const px of pxData) {
+          pixels.push({ id: String(px.id || ''), name: String(px.name || ''), page_id: String(page.id) });
         }
       }
     })
   );
 
   return {
-    facebook_pages: pagesList.map((p: any) => ({
-      id: p.id,
+    facebook_pages: pagesList.map((p) => ({
+      id: String(p.id || ''),
       name: p.name,
       type: 'fb_page',
       permission: p.category || 'page',
       metadata: { category: p.category },
     })),
-    instagram_accounts: instagramAccounts.map((ig: any) => ({
-      id: ig.id,
+    instagram_accounts: instagramAccounts.map((ig) => ({
+      id: String(ig.id || ''),
       name: ig.username || ig.name,
       type: 'ig_account',
       permission: 'admin',
       metadata: { followers: ig.followers_count, page_id: ig.page_id },
     })),
-    ad_accounts: adsList.map((a: any) => ({
-      id: a.id,
+    ad_accounts: adsList.map((a) => ({
+      id: String(a.id || ''),
       name: a.name,
       type: 'ad_account',
       permission: 'advertiser',
       metadata: { accountId: a.account_id, currency: a.currency },
     })),
-    pixels: pixels.map((p) => ({ id: p.id, name: p.name, type: 'pixel', permission: 'reader', metadata: { page_id: p.page_id } })),
+    pixels: pixels.map((p) => ({
+      id: p.id,
+      name: p.name,
+      type: 'pixel',
+      permission: 'reader',
+      metadata: { page_id: p.page_id },
+    })),
   };
 }
 
-// ─── LinkedIn ────────────────────────────────────────────────────────────────
 async function discoverLinkedin(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://api.linkedin.com/v2/organizations?q=organizationRoleAssignments&role=ADMINISTRATOR&state=ACTIVE', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) return { error: `linkedin HTTP ${res.status}` };
-  const data: any = await res.json();
+  const res = await requestProviderJson(
+    'https://api.linkedin.com/v2/organizations?q=organizationRoleAssignments&role=ADMINISTRATOR&state=ACTIVE',
+    { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }, timeoutMs: 12_000 }
+  );
+  if (res.status < 200 || res.status >= 300) return { error: `linkedin HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
-    linkedin_organizations: (data.elements || []).map((o: any) => ({
+    linkedin_organizations: (Array.isArray(data.elements) ? data.elements : []).map((o: any) => ({
       id: o.id || o['organization~']?.id,
       name: o['organization~']?.localizedName || o['organization~']?.name?.localized?.en_US,
       type: 'linkedin_page',
@@ -326,14 +355,14 @@ async function discoverLinkedin(accessToken: string | null) {
   };
 }
 
-// ─── X / Twitter ─────────────────────────────────────────────────────────────
 async function discoverX(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://api.twitter.com/2/users/me', {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  const res = await requestProviderJson('https://api.twitter.com/2/users/me', {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `x HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `x HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
     x_accounts: [
       {
@@ -347,14 +376,14 @@ async function discoverX(accessToken: string | null) {
   };
 }
 
-// ─── TikTok ──────────────────────────────────────────────────────────────────
 async function discoverTiktok(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://open.tiktokapis.com/v2/user/info/', {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  const res = await requestProviderJson('https://open.tiktokapis.com/v2/user/info/', {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `tiktok HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `tiktok HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
     tiktok_accounts: [
       {
@@ -367,16 +396,16 @@ async function discoverTiktok(accessToken: string | null) {
   };
 }
 
-// ─── Pinterest ───────────────────────────────────────────────────────────────
 async function discoverPinterest(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://api.pinterest.com/v5/boards?page_size=50', {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  const res = await requestProviderJson('https://api.pinterest.com/v5/boards?page_size=50', {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `pinterest HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `pinterest HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
-    pinterest_boards: (data.items || []).map((b: any) => ({
+    pinterest_boards: (Array.isArray(data.items) ? data.items : []).map((b: any) => ({
       id: b.id,
       name: b.name,
       type: 'pinterest_board',
@@ -385,27 +414,29 @@ async function discoverPinterest(accessToken: string | null) {
   };
 }
 
-// ─── WordPress — uses application password stored as 'application_password' secret ─
-async function discoverWordPress(integration: any) {
+async function discoverWordPress(integration: IntegrationRecord) {
   const siteUrlRow = await db.integrationResource.findFirst({
     where: { integrationId: integration.id, type: 'manual_field', resourceId: 'site_url' },
   });
   const usernameRow = await db.integrationResource.findFirst({
     where: { integrationId: integration.id, type: 'manual_field', resourceId: 'username' },
   });
-  const secretRow = integration.secrets.find((s: any) => s.kind === 'application_password');
-  if (!siteUrlRow || !usernameRow || !secretRow) return { error: 'wordpress credentials incomplete' };
+  const secretRow = integration.secrets.find((s) => s.kind === 'application_password');
+  if (!siteUrlRow?.name || !usernameRow?.name || !secretRow) {
+    return { error: 'wordpress credentials incomplete' };
+  }
 
-  const siteUrl = siteUrlRow.name!;
-  const username = usernameRow.name!;
+  const siteUrl = validateWordpressSiteUrl(siteUrlRow.name);
+  const username = usernameRow.name;
   const appPassword = decryptSecret(secretRow.ciphertext).replace(/\s/g, '');
   const auth = Buffer.from(`${username}:${appPassword}`).toString('base64');
 
-  const res = await fetch(`${siteUrl.replace(/\/$/, '')}/wp-json/wp/v2/users/me`, {
-    headers: { Authorization: `Basic ${auth}` },
+  const res = await requestProviderJson(`${siteUrl}/wp-json/wp/v2/users/me`, {
+    headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `wordpress HTTP ${res.status}` };
-  const user: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `wordpress HTTP ${res.status}` };
+  const user = (res.data ?? {}) as Record<string, any>;
   return {
     wordpress_sites: [
       {
@@ -419,19 +450,19 @@ async function discoverWordPress(integration: any) {
   };
 }
 
-// ─── Shopify ─────────────────────────────────────────────────────────────────
-async function discoverShopify(integration: any, accessToken: string | null) {
+async function discoverShopify(integration: IntegrationRecord, accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
   const shopRow = await db.integrationResource.findFirst({
     where: { integrationId: integration.id, type: 'manual_field', resourceId: 'shop' },
   });
-  if (!shopRow) return { error: 'shop domain missing' };
-  const shopDomain = shopRow.name!;
-  const res = await fetch(`https://${shopDomain}/admin/api/2024-10/shop.json`, {
-    headers: { 'X-Shopify-Access-Token': accessToken },
+  if (!shopRow?.name) return { error: 'shop domain missing' };
+  const shopDomain = validateShopifyShopDomain(shopRow.name);
+  const res = await requestProviderJson(`https://${shopDomain}/admin/api/2024-10/shop.json`, {
+    headers: { 'X-Shopify-Access-Token': accessToken, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `shopify HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `shopify HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
     shopify_stores: [
       {
@@ -445,16 +476,16 @@ async function discoverShopify(integration: any, accessToken: string | null) {
   };
 }
 
-// ─── Stripe ──────────────────────────────────────────────────────────────────
 async function discoverStripe(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://api.stripe.com/v1/accounts', {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  const res = await requestProviderJson('https://api.stripe.com/v1/accounts', {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `stripe HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `stripe HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
-    stripe_accounts: (data.data || []).map((a: any) => ({
+    stripe_accounts: (Array.isArray(data.data) ? data.data : []).map((a: any) => ({
       id: a.id,
       name: a.business_profile?.name || a.id,
       type: 'stripe_account',
@@ -464,14 +495,14 @@ async function discoverStripe(accessToken: string | null) {
   };
 }
 
-// ─── HubSpot ─────────────────────────────────────────────────────────────────
 async function discoverHubspot(accessToken: string | null) {
   if (!accessToken) return { error: 'no access token' };
-  const res = await fetch('https://api.hubapi.com/oauth/v1/access-tokens/' + accessToken, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+  const res = await requestProviderJson(`https://api.hubapi.com/oauth/v1/access-tokens/${encodeURIComponent(accessToken)}`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `hubspot HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `hubspot HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
     hubspot_accounts: [
       {
@@ -485,22 +516,22 @@ async function discoverHubspot(accessToken: string | null) {
   };
 }
 
-// ─── Mailchimp — uses manual API key ─────────────────────────────────────────
-async function discoverMailchimp(integration: any) {
-  const apiKeyRow = integration.secrets.find((s: any) => s.kind === 'api_key');
+async function discoverMailchimp(integration: IntegrationRecord) {
+  const apiKeyRow = integration.secrets.find((s) => s.kind === 'api_key');
   const dcRow = await db.integrationResource.findFirst({
     where: { integrationId: integration.id, type: 'manual_field', resourceId: 'server_prefix' },
   });
-  if (!apiKeyRow || !dcRow) return { error: 'mailchimp credentials incomplete' };
+  if (!apiKeyRow || !dcRow?.name) return { error: 'mailchimp credentials incomplete' };
   const apiKey = decryptSecret(apiKeyRow.ciphertext);
-  const dc = dcRow.name!;
-  const res = await fetch(`https://${dc}.api.mailchimp.com/3.0/lists`, {
-    headers: { Authorization: `Basic ${Buffer.from(`any:${apiKey}`).toString('base64')}` },
+  const dc = validateMailchimpServerPrefix(dcRow.name);
+  const res = await requestProviderJson(`https://${dc}.api.mailchimp.com/3.0/lists`, {
+    headers: { Authorization: `Basic ${Buffer.from(`any:${apiKey}`).toString('base64')}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `mailchimp HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `mailchimp HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
-    mailchimp_audiences: (data.lists || []).map((l: any) => ({
+    mailchimp_audiences: (Array.isArray(data.lists) ? data.lists : []).map((l: any) => ({
       id: l.id,
       name: l.name,
       type: 'mailchimp_audience',
@@ -510,18 +541,18 @@ async function discoverMailchimp(integration: any) {
   };
 }
 
-// ─── SendGrid — uses manual API key ──────────────────────────────────────────
-async function discoverSendgrid(integration: any) {
-  const apiKeyRow = integration.secrets.find((s: any) => s.kind === 'api_key');
+async function discoverSendgrid(integration: IntegrationRecord) {
+  const apiKeyRow = integration.secrets.find((s) => s.kind === 'api_key');
   if (!apiKeyRow) return { error: 'sendgrid api key missing' };
   const apiKey = decryptSecret(apiKeyRow.ciphertext);
-  const res = await fetch('https://api.sendgrid.com/v3/senders?limit=50', {
-    headers: { Authorization: `Bearer ${apiKey}` },
+  const res = await requestProviderJson('https://api.sendgrid.com/v3/senders?limit=50', {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    timeoutMs: 12_000,
   });
-  if (!res.ok) return { error: `sendgrid HTTP ${res.status}` };
-  const data: any = await res.json();
+  if (res.status < 200 || res.status >= 300) return { error: `sendgrid HTTP ${res.status}` };
+  const data = (res.data ?? {}) as Record<string, any>;
   return {
-    sendgrid_sender_identities: (data.senders || []).map((s: any) => ({
+    sendgrid_sender_identities: (Array.isArray(data.senders) ? data.senders : []).map((s: any) => ({
       id: s.id?.toString(),
       name: s.nickname || s.from?.email,
       type: 'sendgrid_sender',
@@ -529,10 +560,4 @@ async function discoverSendgrid(integration: any) {
       metadata: { email: s.from?.email, verified: s.verified },
     })),
   };
-}
-
-async function fetchJson(url: string): Promise<any> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res.json();
 }
