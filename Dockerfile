@@ -1,46 +1,44 @@
 # ALO Learning Journey — Production Dockerfile (multi-stage)
-# Built for Ubuntu 24.04+ hosts. Uses Bun for install, Node for runtime.
+# Aligned with CI & production: Node 22, package-lock.json (npm ci), port 3061.
 
 # ---- Stage 1: deps ----
-FROM oven/bun:1 AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
 
 # ---- Stage 2: build ----
-FROM oven/bun:1 AS builder
+FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Required binaries for the build/runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    espeak \
     fonts-dejavu-core \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-RUN bunx prisma generate
-RUN bun run build:prod
+RUN npx prisma generate
+RUN npm run build
 
 # ---- Stage 3: runtime ----
-FROM node:22-slim AS runner
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=3017
+ENV PORT=3061
 ENV HOSTNAME=0.0.0.0
 
-# Runtime system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    espeak \
     fonts-dejavu-core \
     ca-certificates \
     curl \
   && rm -rf /var/lib/apt/lists/* && \
     useradd -r -u 1001 -g root alo
 
-# Copy standalone server + static + public
+# Copy standalone server (already includes .next/static, public, scripts, and release SHA)
 COPY --from=builder --chown=alo:root /app/.next/standalone ./
-COPY --from=builder --chown=alo:root /app/.next/static ./.next/static
-COPY --from=builder --chown=alo:root /app/public ./public
 COPY --from=builder --chown=alo:root /app/prisma ./prisma
 COPY --from=builder --chown=alo:root /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=alo:root /app/node_modules/@prisma ./node_modules/@prisma
@@ -50,8 +48,8 @@ RUN mkdir -p /app/db /app/storage && chown -R alo:root /app/db /app/storage
 VOLUME ["/app/storage", "/app/public/generated", "/app/public/avatars", "/app/public/avatar-videos", "/app/public/avatar-audio", "/app/public/avatar-scenes", "/app/public/avatar-thumbs"]
 
 USER alo
-EXPOSE 3017
+EXPOSE 3061
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -sf http://localhost:3017/api/health || exit 1
+  CMD curl -sf http://127.0.0.1:3061/api/health || exit 1
 
 CMD ["node", "server.js"]
