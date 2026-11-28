@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { db } from '@/lib/db';
 import { requireOwnerOrResponse } from '@/lib/auth';
 import { resolvePublicPath } from '@/lib/cleanup';
+import { parseByteRange } from '@/lib/video-exec';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -57,22 +58,14 @@ export async function GET(req: NextRequest) {
 
     const range = req.headers.get('range');
     if (range) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
-      if (!match || (!match[1] && !match[2])) {
+      const parsedRange = parseByteRange(range, fileStat.size);
+      if (!parsedRange.ok) {
         return new Response(null, {
           status: 416,
           headers: { ...baseHeaders, 'Content-Range': `bytes */${fileStat.size}` },
         });
       }
-      const start = match[1] ? Number(match[1]) : Math.max(0, fileStat.size - Number(match[2]));
-      const rawEnd = match[2] && match[1] ? Number(match[2]) : fileStat.size - 1;
-      if (!Number.isFinite(start) || !Number.isFinite(rawEnd) || start < 0 || rawEnd < start || start >= fileStat.size) {
-        return new Response(null, {
-          status: 416,
-          headers: { ...baseHeaders, 'Content-Range': `bytes */${fileStat.size}` },
-        });
-      }
-      const end = Math.min(rawEnd, fileStat.size - 1);
+      const { start, end } = parsedRange;
       const stream = createReadStream(filePath, { start, end });
       return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
         status: 206,

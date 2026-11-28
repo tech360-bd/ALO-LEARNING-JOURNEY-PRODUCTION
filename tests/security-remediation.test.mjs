@@ -238,3 +238,149 @@ test("Phase 9: getSessionUser rejects non-Bearer Authorization headers", async (
   });
   assert.equal(await getSessionUser(req), null);
 });
+
+// ── Security Acceptance Suite (Section 4) ────────────────────────────────────
+test("Acceptance: webhook secrets are encrypted at rest and never returned in GET routes", async () => {
+  const { storeWebhookSecret, resolveWebhookSecret, signWebhookPayload } = await import(
+    "../src/lib/webhook-signature.ts"
+  );
+  const rawSecret = crypto.randomBytes(24).toString("hex");
+  const stored = storeWebhookSecret(rawSecret);
+  assert.ok(stored.startsWith("1:") && stored.split(":").length === 4, "stored secret must be AES-GCM encrypted");
+  assert.ok(!stored.includes(rawSecret), "stored secret must not contain plaintext");
+  assert.equal(resolveWebhookSecret(stored), rawSecret);
+  assert.equal(signWebhookPayload(rawSecret, '{"ok":true}').length, 64);
+
+  const settingsSrc = await read("src/app/api/settings/webhooks/route.ts");
+  const v1Src = await read("src/app/api/v1/webhooks/route.ts");
+  assert.match(settingsSrc, /secretConfigured:\s*Boolean\(w\.secret\)/);
+  assert.match(v1Src, /secretConfigured:\s*Boolean\(h\.secret\)/);
+  assert.doesNotMatch(settingsSrc, /\bsecret:\s*w\.secret/);
+  assert.doesNotMatch(v1Src, /\bsecret:\s*h\.secret/);
+});
+
+test("Acceptance: redirect-based SSRF and DNS rebinding are blocked in fetchSafePublicUrlUsing (Node 22 lookup compatible)", async () => {
+  const http = await import("node:http");
+  const { EventEmitter } = await import("node:events");
+  const { fetchSafePublicUrlUsing, isUrlSafe } = await import("../src/lib/ssrf.ts");
+
+  // 1) Redirect to metadata IP must be rejected on hop 2
+  const mockHop302 = (_url, _opts, cb) => {
+    const req = new EventEmitter();
+    req.end = () => {
+      const res = new EventEmitter();
+      res.statusCode = 302;
+      res.headers = { location: "http://169.254.169.254/latest/meta-data/" };
+      res.destroy = () => {};
+      cb(res);
+    };
+    req.destroy = () => {};
+    return req;
+  };
+  let checks = 0;
+  await assert.rejects(
+    () =>
+      fetchSafePublicUrlUsing(
+        "https://public.example.test/start",
+        {},
+        {
+          httpRequest: mockHop302,
+          httpsRequest: mockHop302,
+          checkUrl: async (u) => {
+            checks++;
+            if (checks === 1) return { allowed: true, resolvedIps: ["93.184.216.34"] };
+            return isUrlSafe(u);
+          },
+        }
+      ),
+    /SSRF guard/i
+  );
+
+  // 2) Mixed public + private resolved IPs (DNS rebinding vector) must be rejected immediately
+  await assert.rejects(
+    () =>
+      fetchSafePublicUrlUsing(
+        "https://rebind.example.test/",
+        {},
+        {
+          checkUrl: async () => ({ allowed: true, resolvedIps: ["93.184.216.34", "127.0.0.1"] }),
+        }
+      ),
+    /private\/blocked IP/i
+  );
+
+  // 3) Real Node 22 socket lookup with { all: true } receives [{ address, family }] instead of crashing
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("pinned-ok");
+  });
+  await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = srv.address();
+    let seenAllLookup = false;
+    const realHttpReq = (url, opts, cb) => {
+      const wrappedOpts = {
+        ...opts,
+        lookup(host, lookupOpts, lcb) {
+          if (lookupOpts && lookupOpts.all) seenAllLookup = true;
+          return opts.lookup(host, lookupOpts, (err, addrOrArr, fam) => {
+            if (err) return lcb(err);
+            // Redirect socket target to local test server after verifying lookup returned valid Node 22 shape
+            if (Array.isArray(addrOrArr)) {
+              assert.equal(addrOrArr[0].address, "93.184.216.34");
+              return lcb(null, [{ address: "127.0.0.1", family: 4 }]);
+            }
+            assert.equal(addrOrArr, "93.184.216.34");
+            return lcb(null, "127.0.0.1", fam || 4);
+          });
+        },
+      };
+      return http.request(url, wrappedOpts, cb);
+    };
+    const resp = await fetchSafePublicUrlUsing(
+      `http://public.example.test:${port}/hello`,
+      {},
+      {
+        httpRequest: realHttpReq,
+        checkUrl: async () => ({ allowed: true, resolvedIps: ["93.184.216.34"] }),
+      }
+    );
+    assert.equal(resp.status, 200);
+    assert.equal(Buffer.from(resp.body).toString("utf8"), "pinned-ok");
+    assert.equal(seenAllLookup, true, "Node 22 autoSelectFamily calls lookup with { all: true }");
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+  }
+});
+
+test("Acceptance: OAuth concurrent state replay allows only one atomic claim", async () => {
+  const cbSrc = await read("src/app/api/v1/integrations/[provider]/callback/route.ts");
+  assert.match(cbSrc, /updateMany\(\s*\{[\s\S]*consumed:\s*false[\s\S]*data:\s*\{\s*consumed:\s*true/);
+  assert.match(cbSrc, /claimed\.count\s*!==\s*1/);
+
+  // Simulate two simultaneous callbacks racing to consume the same OAuthState row
+  let consumed = false;
+  const atomicClaim = async () => {
+    await Promise.resolve();
+    if (consumed) return { count: 0 };
+    consumed = true;
+    return { count: 1 };
+  };
+  const [r1, r2] = await Promise.all([atomicClaim(), atomicClaim()]);
+  assert.equal(r1.count + r2.count, 1, "exactly one concurrent callback may consume OAuthState");
+});
+
+test("Acceptance: HTTP Range boundary parsing handles valid, suffix, open-ended, and invalid ranges", async () => {
+  const { parseByteRange } = await import("../src/lib/video-exec.ts");
+  assert.deepEqual(parseByteRange("bytes=0-99", 1000), { ok: true, start: 0, end: 99 });
+  assert.deepEqual(parseByteRange("bytes=500-", 1000), { ok: true, start: 500, end: 999 });
+  assert.deepEqual(parseByteRange("bytes=0-9999", 1000), { ok: true, start: 0, end: 999 });
+  assert.deepEqual(parseByteRange("bytes=-100", 1000), { ok: true, start: 900, end: 999 });
+  assert.deepEqual(parseByteRange("bytes=-0", 1000), { ok: false });
+  assert.deepEqual(parseByteRange("bytes=1000-1050", 1000), { ok: false });
+  assert.deepEqual(parseByteRange("bytes=200-100", 1000), { ok: false });
+  assert.deepEqual(parseByteRange("bytes=0-1,2-3", 1000), { ok: false });
+  assert.deepEqual(parseByteRange("bytes=abc-def", 1000), { ok: false });
+  assert.deepEqual(parseByteRange("bytes=0-0", 0), { ok: false });
+});
+

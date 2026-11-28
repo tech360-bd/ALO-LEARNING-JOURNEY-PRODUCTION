@@ -116,3 +116,31 @@ export async function resolveSafeMediaInputPath(rawPath: unknown): Promise<strin
     return null;
   }
 }
+
+/**
+ * Parse a single HTTP `Range: bytes=...` header against a known file size.
+ * Returns `{ ok: false }` for malformed, inverted, multi-range, or out-of-bounds
+ * ranges so callers can respond with HTTP 416 Range Not Satisfiable.
+ */
+export function parseByteRange(
+  rangeHeader: string,
+  totalSize: number
+): { ok: true; start: number; end: number } | { ok: false } {
+  if (!Number.isSafeInteger(totalSize) || totalSize <= 0) return { ok: false };
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match || (!match[1] && !match[2])) return { ok: false };
+
+  const start = match[1] ? Number(match[1]) : Math.max(0, totalSize - Number(match[2]));
+  const rawEnd = match[2] && match[1] ? Number(match[2]) : totalSize - 1;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(rawEnd) ||
+    start < 0 ||
+    rawEnd < start ||
+    start >= totalSize
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, start, end: Math.min(rawEnd, totalSize - 1) };
+}
+

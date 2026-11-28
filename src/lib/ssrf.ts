@@ -20,7 +20,6 @@
 
 import http from 'node:http';
 import https from 'node:https';
-import { lookup as dnsLookup } from 'node:dns';
 import { isIP } from 'node:net';
 import { BodyTooLargeError, readLimitedStream } from './read-limited-stream.mjs';
 
@@ -234,21 +233,43 @@ export async function fetchSafePublicUrl(
   rawUrl: string,
   options: SafeFetchOptions = {}
 ): Promise<SafeFetchResponse> {
+  return fetchSafePublicUrlUsing(rawUrl, options);
+}
+
+export async function fetchSafePublicUrlUsing(
+  rawUrl: string,
+  options: SafeFetchOptions = {},
+  deps: {
+    checkUrl?: (url: string) => Promise<SsrfCheckResult>;
+    httpRequest?: typeof http.request;
+    httpsRequest?: typeof https.request;
+  } = {}
+): Promise<SafeFetchResponse> {
   const method = options.method ?? 'GET';
   const timeoutMs = options.timeoutMs ?? 12_000;
   const maxBytes = options.maxBytes ?? 2_000_000;
   const maxRedirects = options.maxRedirects ?? 3;
+  const checkUrl = deps.checkUrl ?? isUrlSafe;
+  const httpRequest = deps.httpRequest ?? http.request.bind(http);
+  const httpsRequest = deps.httpsRequest ?? https.request.bind(https);
 
   let currentUrl = rawUrl;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
-    const safety = await isUrlSafe(currentUrl);
-    if (!safety.allowed) {
+    const safety = await checkUrl(currentUrl);
+    if (!safety.allowed || !safety.resolvedIps || safety.resolvedIps.length === 0) {
       throw new Error(`refused by SSRF guard: ${safety.reason ?? 'unsafe host'}`);
     }
+    for (const ip of safety.resolvedIps) {
+      if (isPrivateIp(ip)) {
+        throw new Error(`refused by SSRF guard: private/blocked IP ${ip}`);
+      }
+    }
+    const pinnedIp = safety.resolvedIps[0].replace(/^\[|\]$/g, '');
+    const pinnedFamily = isIP(pinnedIp) === 6 ? 6 : 4;
 
     const parsed = new URL(currentUrl);
-    const transport = parsed.protocol === 'https:' ? https : http;
+    const requester = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
 
@@ -258,31 +279,27 @@ export async function fetchSafePublicUrl(
       body: Uint8Array;
       location?: string;
     }>((resolve, reject) => {
-      const req = transport.request(
+      const req = requester(
         parsed,
         {
           method,
           agent: false,
           signal,
           headers: options.headers,
-          lookup(hostname, _opts, cb) {
-            const clean = hostname.replace(/^\[|\]$/g, '');
-            if (isIP(clean)) {
-              if (isPrivateIp(clean)) return cb(new Error('Destination IP is not allowed'), '', 4);
-              return cb(null, clean, isIP(clean) === 6 ? 6 : 4);
+          lookup(_hostname, lookupOpts, cb) {
+            if (isPrivateIp(pinnedIp)) {
+              const err = new Error('Destination IP is not allowed');
+              if (lookupOpts && typeof lookupOpts === 'object' && lookupOpts.all) {
+                return (cb as unknown as (e: Error) => void)(err);
+              }
+              return cb(err, '', 4);
             }
-            dnsLookup(hostname, { all: true }, (err, records) => {
-              if (err || !records || records.length === 0) {
-                return cb(new Error(`DNS lookup failed for ${hostname}`), '', 4);
-              }
-              for (const rec of records) {
-                if (isPrivateIp(rec.address)) {
-                  return cb(new Error(`Hostname ${hostname} resolved to blocked IP`), '', 4);
-                }
-              }
-              const first = records[0];
-              cb(null, first.address, first.family);
-            });
+            if (lookupOpts && typeof lookupOpts === 'object' && lookupOpts.all) {
+              return (cb as unknown as (e: null, addrs: Array<{ address: string; family: number }>) => void)(null, [
+                { address: pinnedIp, family: pinnedFamily },
+              ]);
+            }
+            cb(null, pinnedIp, pinnedFamily);
           },
         },
         async (res) => {

@@ -120,18 +120,29 @@ export async function requestProviderJsonUsing(
       family: 4,
       signal,
       headers: options.headers,
-      lookup(host, _lookupOptions, callback) {
+      lookup(host, lookupOptions, callback) {
+        const wantAll = typeof lookupOptions === 'object' && lookupOptions !== null && lookupOptions.all;
+        const reply = (address: string) => {
+          if (wantAll) {
+            return (callback as unknown as (e: null, addrs: Array<{ address: string; family: number }>) => void)(null, [{ address, family: 4 }]);
+          }
+          return callback(null, address, 4);
+        };
+        const fail = (err: Error) => {
+          if (wantAll) return (callback as unknown as (e: Error) => void)(err);
+          return callback(err, '', 4);
+        };
         if (local) {
-          if (host.toLowerCase() === 'localhost') return callback(null, '127.0.0.1', 4);
-          if (host === '127.0.0.1') return callback(null, host, 4);
-          return callback(new Error('Local Ollama host mismatch'), '', 4);
+          if (host.toLowerCase() === 'localhost') return reply('127.0.0.1');
+          if (host === '127.0.0.1') return reply(host);
+          return fail(new Error('Local Ollama host mismatch'));
         }
         resolveHost(host, { family: 4, all: true }, (error, addresses) => {
-          if (error) return callback(new Error('Provider DNS lookup failed'), '', 4);
+          if (error) return fail(new Error('Provider DNS lookup failed'));
           try { assertProviderResolvedAddresses(addresses.map((entry) => entry.address)); }
-          catch (policyError) { return callback(policyError as Error, '', 4); }
+          catch (policyError) { return fail(policyError as Error); }
           // Pin the validated address for this socket; do not perform a second DNS lookup.
-          callback(null, addresses[0].address, 4);
+          reply(addresses[0].address);
         });
       },
     }, (response) => {
