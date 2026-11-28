@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * GET /api/v1/supervisor/agents
  *
@@ -54,7 +53,7 @@ export async function GET(request: NextRequest) {
   // Active queues for this tenant
   const queues = await db.callQueue.findMany({
     where: { companyId: ctx.companyId, status: 'active' },
-    select: { id: true, name: true, maxSize: true, _count: { select: { agentIds: true } } },
+    select: { id: true, name: true, maxSize: true, agentIds: true },
   });
 
   // Active calls count

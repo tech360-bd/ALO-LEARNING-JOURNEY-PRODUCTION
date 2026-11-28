@@ -1,4 +1,3 @@
-// @ts-nocheck — temporary: see audit for fix plan
 /**
  * AI Memory — persistent memory for AI agents across conversations.
  * Inspired by akitaonrails/ai-memory pattern.
@@ -223,10 +222,10 @@ export async function generateImage(
 ): Promise<{ url: string; prompt: string } | null> {
   try {
     const zai = await createApprovedZai();
-    const result = await zai.images.generations.create({
+    const result = (await zai.images.generations.create({
       prompt,
       size,
-    });
+    })) as { data?: Array<{ url?: string }>; url?: string };
     const imageUrl = result.data?.[0]?.url || result.url || null;
     if (!imageUrl) return null;
     return { url: imageUrl, prompt };
@@ -245,9 +244,9 @@ export async function generateVideo(
   try {
     const zai = await createApprovedZai();
     // The SDK supports video generation via async API
-    const result = await zai.video.generations.create({
+    const result = (await zai.video.generations.create({
       prompt,
-    });
+    })) as { id?: string; taskId?: string; task_id?: string; videoUrl?: string; video_url?: string; status?: string };
 
     // Video generation is async — return the task ID
     const taskId = result.id || result.taskId || result.task_id || `vid_${Date.now()}`;

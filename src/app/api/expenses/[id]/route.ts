@@ -1,17 +1,16 @@
-// @ts-nocheck — temporary: see audit for fix plan
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { withAuth } from "@/lib/api-middleware";
 import { sanitizeInput, createAuditLog, ipFromRequest } from "@/lib/security";
 
-export const GET = withAuth(async (request, { params }) => {
+export const GET = withAuth(async (_request, { params, user }) => {
   try {
-    const { id } = await params;
-    const expense = await db.expense.findUnique({
-      where: { id },
-      include: {
-        institution: { select: { id: true, name: true, shortName: true } },
-      },
+    if (!user.companyId) {
+      return NextResponse.json({ error: "Company context required" }, { status: 403 });
+    }
+    const { id } = (await params) as { id: string };
+    const expense = await db.expense.findFirst({
+      where: { id, companyId: user.companyId },
     });
 
     if (!expense) {
@@ -27,30 +26,35 @@ export const GET = withAuth(async (request, { params }) => {
 
 export const PUT = withAuth(async (request, { params, user }) => {
   try {
-    const { id } = await params;
-    const existing = await db.expense.findUnique({ where: { id } });
+    if (!user.companyId) {
+      return NextResponse.json({ error: "Company context required" }, { status: 403 });
+    }
+    const { id } = (await params) as { id: string };
+    const existing = await db.expense.findFirst({ where: { id, companyId: user.companyId } });
     if (!existing) {
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
 
     const body = await request.json();
     const data: Record<string, unknown> = {};
-    if (body.description !== undefined) data.description = sanitizeInput(body.description);
-    if (body.amount !== undefined) data.amount = body.amount;
-    if (body.category !== undefined) data.category = body.category ? sanitizeInput(body.category) : null;
-    if (body.expenseDate !== undefined) data.expenseDate = body.expenseDate ? new Date(body.expenseDate) : new Date();
-    if (body.receiptUrl !== undefined) data.receiptUrl = body.receiptUrl || null;
+    if (body.title !== undefined) data.title = sanitizeInput(String(body.title));
+    if (body.description !== undefined) data.description = body.description ? sanitizeInput(String(body.description)) : null;
+    if (body.amount !== undefined && Number.isFinite(Number(body.amount))) data.amount = Number(body.amount);
+    if (body.category !== undefined) data.category = body.category ? sanitizeInput(String(body.category)) : "general";
+    if (body.date !== undefined || body.expenseDate !== undefined) {
+      const rawDate = body.date ?? body.expenseDate;
+      data.date = rawDate ? new Date(rawDate) : new Date();
+    }
+    if (body.status !== undefined) data.status = sanitizeInput(String(body.status));
 
     const expense = await db.expense.update({
-      where: { id },
+      where: { id: existing.id },
       data,
-      include: {
-        institution: { select: { id: true, name: true, shortName: true } },
-      },
     });
 
     await createAuditLog({
       userId: user.userId,
+      companyId: user.companyId,
       action: "update",
       resource: "expense",
       resourceId: id,
@@ -67,20 +71,24 @@ export const PUT = withAuth(async (request, { params, user }) => {
 
 export const DELETE = withAuth(async (request, { params, user }) => {
   try {
-    const { id } = await params;
-    const existing = await db.expense.findUnique({ where: { id } });
+    if (!user.companyId) {
+      return NextResponse.json({ error: "Company context required" }, { status: 403 });
+    }
+    const { id } = (await params) as { id: string };
+    const existing = await db.expense.findFirst({ where: { id, companyId: user.companyId } });
     if (!existing) {
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
 
-    await db.expense.delete({ where: { id } });
+    await db.expense.delete({ where: { id: existing.id } });
 
     await createAuditLog({
       userId: user.userId,
+      companyId: user.companyId,
       action: "delete",
       resource: "expense",
       resourceId: id,
-      details: { description: existing.description, amount: existing.amount },
+      details: { title: existing.title, description: existing.description, amount: existing.amount },
       ipAddress: ipFromRequest(request),
     });
 
