@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 /** The only job names this repository's gates may depend on. */
 export const KNOWN_JOBS = Object.freeze({
-  "ci.yml": ["validate", "security-scan"],
+  "ci.yml": ["validate", "security-scan", "docker-smoke"],
   "deploy.yml": ["verify", "network-preflight", "deploy"],
   "datadog-synthetics.yml": ["build"],
 });

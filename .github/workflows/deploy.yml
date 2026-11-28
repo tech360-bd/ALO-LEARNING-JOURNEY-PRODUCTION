@@ -195,9 +195,14 @@ jobs:
       # deployment.
       - name: Verdict — nothing to verify (credentials not usable)
         if: ${{ steps.readiness.outputs.ready != 'true' && env.SKIP_JOB == '1' }}
+        env:
+          REASON: ${{ steps.readiness.outputs.reason }}
         run: |
-          echo "::warning title=Deployment::network preflight SKIPPED — the tailnet credentials are not usable. Nothing was deployed; CI is unaffected."
-          echo "preflight=skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Deployment NOT executed::Network preflight and production deployment were SKIPPED (reason=${REASON}). Nothing was deployed; do not treat this skipped run as deployment verification."
+          {
+            echo "preflight=skipped"
+            echo "deployment=NOT_DEPLOYED (skipped: ${REASON})"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Missing credentials are classified below and end the run as SKIPPED.
       # This step is the other half: credentials that are present but malformed
@@ -414,13 +419,13 @@ jobs:
             echo "- Deploy host under test: $SERVER_HOST"
             if [ -n "$DEPLOY_ENABLED" ]; then
               echo "- Deployment readiness switch (vars.VPS_DEPLOY_ENABLED): '$DEPLOY_ENABLED'"
-            if [ "${PREFLIGHT_READY:-}" != "true" ]; then
-              echo "- Tailnet credentials: NOT usable — the preflight was skipped, so nothing about the network was (or could be) proven on this run."
-            else
-              echo "- Tailnet credentials: present — the network steps above are the evidence."
-            fi
             else
               echo "- Deployment readiness switch (vars.VPS_DEPLOY_ENABLED): unset — deploy job will be SKIPPED"
+            fi
+            if [ "${PREFLIGHT_READY:-}" != "true" ]; then
+              echo "- Tailnet credentials: NOT usable — the preflight was skipped, so nothing about the network was proven and NO deployment occurred."
+            else
+              echo "- Tailnet credentials: present — the network steps above are the evidence."
             fi
             echo "- Full deployment is additionally gated on the production environment approval."
           } >> "$GITHUB_STEP_SUMMARY"
