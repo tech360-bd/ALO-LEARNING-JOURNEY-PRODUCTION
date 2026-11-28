@@ -405,4 +405,12 @@ jobs:
           export ADMIN_OTP_REQUIRED=false
           export MARKETINGOS_ALLOW_REGISTRATION=true
           export RELEASE_SHA="$GITHUB_SHA"
-          npm run test:e2e
+          set +e
+          npm run test:e2e > playwright.out 2>&1
+          code=$?
+          set -e
+          cat playwright.out
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=Playwright E2E failed::$(tail -n 45 playwright.out | awk 'BEGIN { ORS = "%0A" } { gsub(/%/, "%25"); gsub(/\r/, "%0D"); print }' | head -c 3800)"
+            exit "$code"
+          fi
