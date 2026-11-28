@@ -27,6 +27,7 @@
     "smoke:standalone": "node scripts/verification/smoke-standalone.mjs",
     "db:repair-defaults": "node scripts/repair-column-defaults.mjs",
     "test:migrations:integration": "node scripts/test-migrations.mjs",
+    "test:backup-restore": "node scripts/test-backup-restore.mjs",
     "db:push": "node scripts/prisma-dev-guard.mjs push",
     "db:generate": "prisma generate",
     "db:migrate": "node scripts/prisma-dev-guard.mjs migrate",
