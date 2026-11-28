@@ -4,7 +4,7 @@
  * 1. ALO Learning Journey admin console (learn.aloeducation.com): a single
  *    administrator authenticated with next-auth credentials (ADMIN_EMAIL +
  *    scrypt ADMIN_PASSWORD_HASH, optional SMS OTP). Route handlers call
- *    `requireOwner()`; `middleware.ts` enforces the session in production.
+ *    `requireOwner()`; `src/proxy.ts` enforces the session in production.
  * 2. MarketingOS / AI-workforce (`/dashboard`, integrated in PR #27): multi-user
  *    JWT bearer tokens (`createToken` / `verifyToken` / `getSessionUser`) backed
  *    by the `User` table, signed with JWT_SECRET.
@@ -12,6 +12,7 @@
  * The two systems are independent; neither accepts the other's credentials.
  */
 import { timingSafeEqual } from "node:crypto";
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import type { NextAuthOptions, Session } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
@@ -106,7 +107,9 @@ export const authOptions: NextAuthOptions = {
  */
 export async function requireOwner(): Promise<{ ownerId: string; role: string }> {
   if (!isAdminAuthenticationConfigured()) {
-    if (process.env.NODE_ENV !== "production") return { ownerId: DEV_OWNER_ID, role: "admin" };
+    if (process.env.NODE_ENV !== "production" && process.env.ALO_REQUIRE_AUTH !== "true") {
+      return { ownerId: DEV_OWNER_ID, role: "admin" };
+    }
     const error = new Error("ADMIN_AUTH_NOT_CONFIGURED");
     (error as Error & { statusCode?: number }).statusCode = 503;
     throw error;
@@ -119,6 +122,28 @@ export async function requireOwner(): Promise<{ ownerId: string; role: string }>
     throw error;
   }
   return { ownerId: DEV_OWNER_ID, role: "admin" };
+}
+
+/**
+ * Route-handler helper: returns `{ owner }` on success or `{ response }`
+ * (401/503 JSON with Cache-Control: no-store) on failure.
+ */
+export async function requireOwnerOrResponse(): Promise<
+  | { owner: { ownerId: string; role: string }; response?: never }
+  | { owner?: never; response: NextResponse }
+> {
+  try {
+    const owner = await requireOwner();
+    return { owner };
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number })?.statusCode ?? 401;
+    return {
+      response: NextResponse.json(
+        { error: status === 503 ? "auth_not_configured" : "unauthorized" },
+        { status, headers: { "Cache-Control": "no-store" } }
+      ),
+    };
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

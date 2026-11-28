@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { executeAsAgent } from "@/lib/agent-runtime";
 import { spawnSync } from "child_process";
@@ -139,6 +140,8 @@ function generateTTSToTarget(
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const body = await req.json().catch(() => ({}));
 

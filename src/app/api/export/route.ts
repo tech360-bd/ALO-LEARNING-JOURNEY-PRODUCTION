@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 
 // Export data as CSV or JSON. Supports: packages | comments | analytics | posts
 export async function GET(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type") ?? "packages";

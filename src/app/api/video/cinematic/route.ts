@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireOwnerOrResponse } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { generateImageFile } from "@/lib/ai";
 import { spawnSync } from "child_process";
@@ -65,6 +66,8 @@ function generateSrtFile(segments: { text: string; start: number; end: number }[
 }
 
 export async function POST(req: Request) {
+  const auth = await requireOwnerOrResponse();
+  if (auth.response) return auth.response;
   await ensureSeeded();
   const body = await req.json().catch(() => ({}));
 
