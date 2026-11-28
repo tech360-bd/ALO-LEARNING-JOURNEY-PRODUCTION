@@ -6,6 +6,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        RELEASE_SHA: ${RELEASE_SHA:-}
     restart: unless-stopped
     ports:
       - "127.0.0.1:3061:3061"

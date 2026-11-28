@@ -10,6 +10,8 @@ RUN npm ci --ignore-scripts
 # ---- Stage 2: build ----
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
+ARG RELEASE_SHA=""
+ENV RELEASE_SHA=${RELEASE_SHA}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,9 +26,11 @@ RUN npm run build
 # ---- Stage 3: runtime ----
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
+ARG RELEASE_SHA=""
 ENV NODE_ENV=production
 ENV PORT=3061
 ENV HOSTNAME=0.0.0.0
+ENV RELEASE_SHA=${RELEASE_SHA}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -43,8 +47,10 @@ COPY --from=builder --chown=alo:root /app/prisma ./prisma
 COPY --from=builder --chown=alo:root /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder --chown=alo:root /app/node_modules/@prisma ./node_modules/@prisma
 
-# Storage volumes (mounted at runtime)
-RUN mkdir -p /app/db /app/storage && chown -R alo:root /app/db /app/storage
+# Storage volumes (mounted at runtime) — pre-create with alo ownership before VOLUME
+RUN mkdir -p /app/db /app/storage /app/public/generated /app/public/avatars \
+    /app/public/avatar-videos /app/public/avatar-audio /app/public/avatar-scenes /app/public/avatar-thumbs \
+  && chown -R alo:root /app/db /app/storage /app/public
 VOLUME ["/app/storage", "/app/public/generated", "/app/public/avatars", "/app/public/avatar-videos", "/app/public/avatar-audio", "/app/public/avatar-scenes", "/app/public/avatar-thumbs"]
 
 USER alo
